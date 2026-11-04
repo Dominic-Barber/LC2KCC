@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lc2kcc"
+version = "0.0.1"
+description = "C compiler targeting the EECS 370 LC-2K ISA"
+requires-python = ">=3.11"
+dependencies = ["pycparser>=2.21"]
+
+[project.scripts]
+lc2kcc = "lc2kcc.cli:main"
+
+[tool.setuptools.package-data]
+lc2kcc = ["include/*.h"]
