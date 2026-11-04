@@ -1624,6 +1624,8 @@ class FuncGen:
                 return self.helper_call_ty("Shl", [a, b], ty)
             if n == 31:
                 return self.sign_bit(a, ty)
+            if a.bits is not None and a.bits <= 16:
+                return self.shift_right_small(a, n, ty)
             name = "Shru" if (ty is UINT or (a.bits is not None and a.bits < 32)) else "Shrs"
             res = self.helper_call_ty(name, [a, const_val(UINT, 1 << n)], ty)
             res.bits = None if a.bits is None else max(1, a.bits - n)
@@ -1635,6 +1637,30 @@ class FuncGen:
         mask = self.helper_call_ty("Shl", [const_val(INT, 1), b], UINT)
         name = "Shru" if ty is UINT else "Shrs"
         return self.helper_call_ty(name, [a, mask], ty)
+
+    def shift_right_small(self, a, n, ty):
+        """a >> n for a value known to be in [0, 2^16): test each bit that survives the shift."""
+        width = a.bits
+        if n >= width:
+            self.release(a)
+            return const_val(ty, 0)
+        a = self.to_reg(a)
+        q = self.new_tmp(keep=(a.tmp,))
+        t = self.new_tmp(keep=(a.tmp, q))
+        rx = self.reg_of(a.tmp, keep=(q, t))
+        self.emit("nor", rx, rx, rx)  # rx = ~a
+        self.emit("add", ZERO, ZERO, q.reg)
+        for i in range(n, width):
+            skip = self.new_label()
+            self.emit("lw", ZERO, AT, self.k(~(1 << i)))
+            self.emit("nor", rx, AT, t.reg)  # t = a & (1 << i)
+            self.emit("beq", t.reg, ZERO, skip)
+            self.emit("lw", ZERO, AT, self.k(1 << (i - n)))
+            self.emit("add", q.reg, AT, q.reg)
+            self.place(skip)
+        self.release(a)
+        self.release_tmp(t)
+        return Val(ty, tmp=q, bits=max(1, width - n))
 
     def sign_bit(self, a, ty):
         """a >> 31: 1 (logical) or -1 (arithmetic) if a < 0, else 0."""
