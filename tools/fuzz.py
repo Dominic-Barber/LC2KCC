@@ -39,6 +39,8 @@ class Gen:
     def const(self):
         r = self.r
         k = r.random()
+        if k < 0.15:
+            return r.choice(["(-1)", "0", "1", "2147483647", "(-2147483647 - 1)", "255", "256", "65535", "65536", "0x80000000u", "0xffffffffu", "(-2)", "2"])
         if k < 0.4:
             return str(r.randint(0, 20))
         if k < 0.6:

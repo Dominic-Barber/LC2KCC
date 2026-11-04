@@ -1867,17 +1867,34 @@ class FuncGen:
             self.branch_zero(self.reg_of(b.tmp), label, when)
             self.release(b)
             return
-        if not unsigned and b.is_const and s32(b.off) == 0 and op == "<":
-            a = self.to_reg(a)
-            self.branch_sign(self.reg_of(a.tmp), label, when)
-            self.release(a)
-            return
-        if not unsigned and a.is_const and s32(a.off) == -1 and op == "<=":
-            # -1 <= b  <=>  b >= 0
-            b = self.to_reg(b)
-            self.branch_sign(self.reg_of(b.tmp), label, not when)
-            self.release(b)
-            return
+        if not unsigned:
+            rel = None  # comparison of one operand against 0: (variable, kind)
+            if b.is_const and not a.is_const:
+                c = s32(b.off)
+                if (op, c) in (("<", 0), ("<=", -1)):
+                    rel = (a, "neg")
+                elif (op, c) in (("<=", 0), ("<", 1)):
+                    rel = (a, "nonpos")
+            elif a.is_const and not b.is_const:
+                c = s32(a.off)
+                if (op, c) in (("<=", 0), ("<", -1)):
+                    rel = (b, "nonneg")
+                elif (op, c) in (("<", 0), ("<=", 1)):
+                    rel = (b, "pos")
+            if rel is not None:
+                x, kind = rel
+                x = self.to_reg(x)
+                r = self.reg_of(x.tmp)
+                if kind == "neg":
+                    self.branch_sign(r, label, when)
+                elif kind == "nonneg":
+                    self.branch_sign(r, label, not when)
+                elif kind == "pos":
+                    self.branch_pos(r, label, when)
+                else:
+                    self.branch_pos(r, label, not when)
+                self.release(x)
+                return
         if a.bits is not None and a.bits <= 31 and b.bits is not None and b.bits <= 31:
             if op == "<":
                 # a < b  <=>  not (b <= a)
@@ -1922,6 +1939,17 @@ class FuncGen:
         self.emit("nor", r, AT, r)  # r == 0 iff negative iff a <= b
         self.branch_zero(r, label, not when)
         self.release(res)
+
+    def branch_pos(self, r, label, when):
+        """Jump if (r > 0) == when (signed)."""
+        if when:
+            skip = self.new_label()
+            self.emit("beq", r, ZERO, skip)
+            self.branch_sign(r, label, False)
+            self.place(skip)
+        else:
+            self.emit("beq", r, ZERO, label)
+            self.branch_sign(r, label, True)
 
     def branch_sign(self, r, label, when):
         """Jump if (r < 0) == when."""
