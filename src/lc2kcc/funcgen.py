@@ -228,7 +228,19 @@ class FuncGen:
 
     def k(self, value):
         """Label of the .fill word holding a constant."""
+        if self.noemit:
+            raise NotConstant()
         return self.p.const(s32(value))
+
+    def cell(self, g, off=0):
+        if self.noemit:
+            raise NotConstant()
+        return self.comp.addr_cell(g, off)
+
+    def helper_cell(self, name):
+        if self.noemit:
+            raise NotConstant()
+        return self.comp.helper_cell(name)
 
     def load_const_reg(self, reg, value):
         value = s32(value)
@@ -256,10 +268,10 @@ class FuncGen:
         if v.sym is not None:
             lab = self.comp.label_at(v.sym, v.off) if v.sym.kind != "func" else None
             if lab is not None:
-                cell = self.comp.addr_cell(v.sym, v.off)
+                cell = self.cell(v.sym, v.off)
                 extra = 0
             else:
-                cell = self.comp.addr_cell(v.sym, 0)
+                cell = self.cell(v.sym, 0)
                 extra = v.off
             if t is None:
                 t = self.new_tmp(keep)
@@ -393,17 +405,13 @@ class FuncGen:
                     pass
             return r
         if to.is_int():
+            # to is narrower than 32 bits (32-bit targets returned above)
             if v.is_const:
                 return const_val(to, v.off)
-            if frm.is_int() and frm.size < to.size:
-                return v.copy(type=to)
-            if frm.is_int() and frm.size == to.size and frm.signed == to.signed:
-                return v.copy(type=to)
-            # narrowing or sign change inside 32 bits
-            if v.bits is not None and v.bits <= (to.size * 8 - (1 if to.signed else 0)):
-                r = v.copy(type=to)
-                return r
-            if frm.is_int() and not frm.signed and to.signed and frm.size < to.size:
+            lo, hi = self.value_range(v)
+            tlo = -(1 << (to.size * 8 - 1)) if to.signed else 0
+            thi = (1 << (to.size * 8 - 1)) - 1 if to.signed else (1 << (to.size * 8)) - 1
+            if tlo <= lo and hi <= thi:
                 return v.copy(type=to)
             v = self.to_reg(v)
             self.normalize(v.tmp, to)
@@ -413,6 +421,18 @@ class FuncGen:
         if to.is_struct() and frm.is_struct():
             return v.copy(type=to)
         raise CompileError(f"cannot convert {frm} to {to}")
+
+    @staticmethod
+    def value_range(v):
+        """Inclusive (lo, hi) bounds of a non-constant integer Val."""
+        if v.bits is not None:
+            return 0, (1 << v.bits) - 1
+        ty = v.type
+        if ty.is_int():
+            if ty.signed:
+                return -(1 << (ty.size * 8 - 1)), (1 << (ty.size * 8 - 1)) - 1
+            return 0, (1 << (ty.size * 8)) - 1
+        return -(1 << 31), (1 << 32) - 1
 
     def normalize(self, t, to, keep=()):
         """Truncate / extend the register of tmp t to the narrow integer type."""
@@ -442,7 +462,7 @@ class FuncGen:
         self.place_args([v.tmp for v in vals], [1, 2, 3][: len(vals)])
         for v in vals:
             self.release(v)
-        self.emit("lw", ZERO, AT, self.comp.helper_cell(name))
+        self.emit("lw", ZERO, AT, self.helper_cell(name))
         self.emit("jalr", AT, 4)
         t = self.new_tmp(reg=1)
         return Val(INT, tmp=t)
@@ -512,7 +532,7 @@ class FuncGen:
             self.emit("jalr", fp.tmp.reg, RA)
             self.release(fp)
         else:
-            self.emit("lw", ZERO, AT, self.comp.addr_cell(target))
+            self.emit("lw", ZERO, AT, self.cell(target))
             self.emit("jalr", AT, RA)
         self.emit("lw", ZERO, AT, Lazy("fs", -1))
         self.emit("add", SP, AT, SP)
@@ -552,13 +572,14 @@ class FuncGen:
         saved = self.scope
         if scope is not None:
             self.scope = scope
+        prev_noemit = self.noemit
         self.noemit = True
         try:
             v = self.rvalue(node)
         except NotConstant:
             raise CompileError("expression is not an integer constant", node) from None
         finally:
-            self.noemit = False
+            self.noemit = prev_noemit
             self.scope = saved
         if not v.is_const:
             raise CompileError("expression is not an integer constant", node)
@@ -566,13 +587,14 @@ class FuncGen:
 
     def eval_static(self, node):
         """Value of a static initializer: int, or Addr."""
+        prev_noemit = self.noemit
         self.noemit = True
         try:
             v = self.rvalue(node)
         except NotConstant:
             raise CompileError("initializer is not a compile-time constant", node) from None
         finally:
-            self.noemit = False
+            self.noemit = prev_noemit
         if v.tmp is not None or v.sp:
             raise CompileError("initializer is not a compile-time constant", node)
         if v.sym is not None:
@@ -647,6 +669,7 @@ class FuncGen:
         words[base] = v
 
     def eval_static_conv(self, init, ty):
+        prev_noemit = self.noemit
         self.noemit = True
         try:
             v = self.rvalue(init)
@@ -654,7 +677,7 @@ class FuncGen:
         except NotConstant:
             raise CompileError("initializer is not a compile-time constant", init) from None
         finally:
-            self.noemit = False
+            self.noemit = prev_noemit
         if v.tmp is not None or v.sp:
             raise CompileError("initializer is not a compile-time constant", init)
         if v.sym is not None:
@@ -903,7 +926,11 @@ class FuncGen:
     def e_TernaryOp(self, node, discard):
         c = self.try_const_cond(node.cond)
         if c is not None:
-            return self.expr(node.iftrue if c else node.iffalse, discard)
+            chosen = self.expr(node.iftrue if c else node.iffalse, discard)
+            if discard or chosen is None:
+                return chosen
+            rty = self.ternary_type(cty.decay(self.static_type(node.iftrue)), cty.decay(self.static_type(node.iffalse)))
+            return self.conv(chosen, rty)
         self.flush()
         lelse, lend = self.new_label(), self.new_label()
         self.cond_jump(node.cond, lelse, False)
@@ -1528,13 +1555,14 @@ class FuncGen:
         saved_code = self.code
         saved = (list(self.live), dict(self.owner), list(self.free_slots), self.nspill, self.leaf)
         self.code = []
+        prev_noemit = self.noemit
         self.noemit = True
         try:
             v = self.rvalue(node)
         except (NotConstant, CompileError):
             return None
         finally:
-            self.noemit = False
+            self.noemit = prev_noemit
             self.code = saved_code
             self.live, self.owner, self.free_slots, self.nspill, self.leaf = saved
         if v.is_const:
