@@ -1375,6 +1375,9 @@ class FuncGen:
         d = self.conv(d, INT)
         if size == 1:
             return d
+        if size & (size - 1) == 0:
+            # the difference is an exact multiple of the element size
+            return self.shift(">>", d, const_val(INT, size.bit_length() - 1), INT, node)
         return self.divide("/", d, const_val(INT, size), INT, node)
 
     def fold_arith(self, op, x, y, ty, node):
@@ -1535,19 +1538,58 @@ class FuncGen:
 
     def divide(self, op, a, b, ty, node):
         unsigned = ty is UINT
-        if b.is_const and unsigned and b.off > 0 and (b.off & (b.off - 1)) == 0:
+        if b.is_const and b.off > 0 and (b.off & (b.off - 1)) == 0:
             k = b.off.bit_length() - 1
-            if op == "/":
+            if unsigned:
+                if op == "/":
+                    return a if k == 0 else self.shift(">>", a, const_val(INT, k), ty, node)
                 if k == 0:
-                    return a
-                return self.shift(">>", a, const_val(INT, k), ty, node)
+                    self.release(a)
+                    return const_val(ty, 0)
+                return self.arith_ty("&", a, const_val(ty, b.off - 1), ty, node)
             if k == 0:
+                if op == "/":
+                    return a
                 self.release(a)
                 return const_val(ty, 0)
-            return self.arith_ty("&", a, const_val(ty, b.off - 1), ty, node)
+            if not a.is_const:
+                return self.signed_pow2(op, a, k, ty, node)
         name = ("__udiv" if op == "/" else "__umod") if unsigned else ("__sdiv" if op == "/" else "__smod")
         g = self.comp.runtime_func(name)
         return self.call(g, [a, b], ty, g.type.params, False, node)
+
+    def signed_pow2(self, op, a, k, ty, node):
+        """Signed x / 2^k or x % 2^k (k >= 1), rounding toward zero."""
+        a = self.to_reg(a)
+        r = self.reg_of(a.tmp)
+        neg, end = self.new_label(), self.new_label()
+        if op == "/":
+            # bias negative values by 2^k - 1, then shift arithmetically
+            self.emit("lw", ZERO, AT, self.k(0x7FFFFFFF))
+            self.emit("nor", r, AT, AT)  # r6 == 0 iff x < 0
+            self.emit("beq", AT, ZERO, neg)
+            self.jmp(end)
+            self.place(neg)
+            self.emit("lw", ZERO, AT, self.k((1 << k) - 1))
+            self.emit("add", r, AT, r)
+            self.place(end)
+            return self.shift(">>", a, const_val(INT, k), ty, node)
+        # x % 2^k: low bits, minus 2^k if x < 0 and the low bits are not all zero
+        t = self.new_tmp(keep=(a.tmp,))
+        self.emit("nor", r, r, t.reg)
+        self.emit("lw", ZERO, AT, self.k(-(1 << k)))
+        self.emit("nor", t.reg, AT, t.reg)  # t = x & (2^k - 1)
+        self.emit("lw", ZERO, AT, self.k(0x7FFFFFFF))
+        self.emit("nor", r, AT, AT)  # r6 == 0 iff x < 0
+        self.emit("beq", AT, ZERO, neg)
+        self.jmp(end)
+        self.place(neg)
+        self.emit("beq", t.reg, ZERO, end)
+        self.emit("lw", ZERO, AT, self.k(-(1 << k)))
+        self.emit("add", t.reg, AT, t.reg)
+        self.place(end)
+        self.release(a)
+        return Val(ty, tmp=t)
 
     def shift(self, op, a, b, ty, node):
         if a.is_const and b.is_const:

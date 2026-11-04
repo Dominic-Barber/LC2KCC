@@ -4,10 +4,13 @@
  * LC-2K has no timer and no I/O device, so:
  *  - Time is synthetic: every run reports exactly 10 seconds, which keeps
  *    CoreMark's "must run >= 10 secs" check from counting as an error.
- *    Real performance comes from the simulator's instruction count.
- *  - ee_printf copies the raw format string (arguments are ignored) into
- *    ee_outbuf, which the simulator can dump as text after halt. That is
- *    enough to see "Correct operation validated." or the ERROR! lines.
+ *    Real performance is the simulator's instruction count.
+ *  - ee_printf formats into ee_outbuf (%d %u %x %c %s, zero padding and
+ *    width), which the simulator can dump as text after halt. The result
+ *    shows the CRCs and "Correct operation validated." or the ERROR! lines.
+ *
+ * Built natively (no __LC2K__) this same port gives the x86-32 reference
+ * build used for CRC cross-checks (make coremark-native).
  */
 #include "coremark.h"
 #include <stdarg.h>
