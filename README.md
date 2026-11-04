@@ -3,7 +3,7 @@
 A C compiler for the **EECS 370 LC-2K ISA** (8 opcodes, 8 registers, 16-bit
 offsets, 65,536 words of memory). It is written in Python with
 [pycparser](https://github.com/eliben/pycparser) and compiles
-[CoreMark](third_party/coremark), unmodified, to a 9,873-word program that
+[CoreMark](third_party/coremark), unmodified, to a 9,850-word program that
 validates itself (`Correct operation validated.`) on the bundled simulator,
 with the same CRCs as the x86-32 build.
 
@@ -140,7 +140,7 @@ definitions, inline assembly.
   which implement the extended 470 encoding of the same assembly language,
   as an independent check (`lc2kcc run --fast`).
 
-CoreMark, one iteration (`ITERATIONS=1`): 9,873 words, about 4.0 million
+CoreMark, one iteration (`ITERATIONS=1`): 9,850 words, about 3.9 million
 instructions; `tools/profile.py` reports where they go. The port fakes a
 10-second run so CoreMark does not reject it as too short; real performance
 is the simulator's instruction count.
