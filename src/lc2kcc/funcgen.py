@@ -506,22 +506,33 @@ class FuncGen:
     def call(self, target, args, ret_type, params=None, variadic=False, node=None):
         """Emit a C-ABI call. target: GObj (direct) or Val (function pointer)."""
         self.leaf = False
-        if variadic and len(args) - len(params or []) > VARARG_SLOTS:
-            raise CompileError("too many variadic arguments", node)
         fp = None
         if isinstance(target, Val):
             fp = self.to_reg(target)
         arg_vals = []
+        if ret_type.is_struct():
+            # hidden first argument: where the callee stores the returned struct
+            tmp = self.alloc_temp(ret_type.size)
+            arg_vals.append(Val(Ptr(ret_type), sp=True, off=tmp))
+        nfixed = len(arg_vals) + (len(params) if params is not None else 0)
         for i, a in enumerate(args):
             if params is not None and i < len(params):
                 a = self.conv(a, params[i])
             else:
                 a = self.conv(a, self.default_promote(a.type))
-            if a.type.is_struct():
-                raise CompileError("passing structs by value is not supported", node)
             arg_vals.append(a)
-        for i, a in enumerate(arg_vals):
-            self.store_arg(i, a)
+        offsets = []
+        off = 0
+        for a in arg_vals:
+            offsets.append(off)
+            off += max(1, a.type.size) if a.type.is_struct() else 1
+        fixed_words = 0
+        for a in arg_vals[:nfixed]:
+            fixed_words += max(1, a.type.size) if a.type.is_struct() else 1
+        if variadic and off - fixed_words > VARARG_SLOTS:
+            raise CompileError("too many variadic arguments", node)
+        for o, a in zip(offsets, arg_vals):
+            self.store_arg(o, a)
         keep = (fp.tmp,) if fp is not None else ()
         if fp is not None:
             self.reg_of(fp.tmp)
@@ -538,6 +549,8 @@ class FuncGen:
         self.emit("add", SP, AT, SP)
         if ret_type.is_void():
             return Val(cty.VOID)
+        if ret_type.is_struct():
+            return Val(ret_type, sp=True, off=tmp)
         t = self.new_tmp(reg=1)
         return Val(ret_type, tmp=t, bits=int_range_bits(ret_type))
 
@@ -545,8 +558,11 @@ class FuncGen:
     def default_promote(ty):
         return cty.promote(cty.decay(ty))
 
-    def store_arg(self, i, v):
-        slot = Lazy("arg", i)
+    def store_arg(self, off, v):
+        """Store argument v at word offset `off` of the outgoing argument area."""
+        if v.type.is_struct():
+            return self.copy_to_arg(off, v)
+        slot = Lazy("arg", off)
         if v.is_const:
             if s32(v.off) == 0:
                 reg = ZERO
@@ -565,6 +581,51 @@ class FuncGen:
                 reg = v.tmp.reg
         self.emit("sw", SP, reg, slot)
         self.release(v)
+
+    def copy_to_arg(self, off, src):
+        """Copy a struct argument (address Val src) into the outgoing argument area."""
+        n = max(1, src.type.size)
+        src = self.to_reg(src)
+        sr = self.reg_of(src.tmp)
+        if n <= 8:
+            for j in range(n):
+                self.emit("lw", sr, AT, j)
+                self.emit("sw", SP, AT, Lazy("arg", off + j))
+        else:
+            dst = self.new_tmp(keep=(src.tmp,))
+            self.emit("lw", ZERO, dst.reg, Lazy("argaddr", off))
+            self.emit("add", SP, dst.reg, dst.reg)
+            self.copy_loop(src.tmp, dst, n)
+            self.release_tmp(dst)
+        self.release(src)
+
+    def copy_loop(self, src, dst, n):
+        """Copy n words from [src] to [dst] with a loop; src/dst are tmps (advanced)."""
+        cnt = self.new_tmp(keep=(src, dst))
+        sr = self.reg_of(src, keep=(dst, cnt))
+        dr = self.reg_of(dst, keep=(src, cnt))
+        self.load_const_reg(cnt.reg, n)
+        top = self.new_label()
+        self.place(top)
+        self.emit("lw", sr, AT, 0)
+        self.emit("sw", dr, AT, 0)
+        self.emit("lw", ZERO, AT, self.k(1))
+        self.emit("add", sr, AT, sr)
+        self.emit("add", dr, AT, dr)
+        self.emit("lw", ZERO, AT, self.k(-1))
+        self.emit("add", cnt.reg, AT, cnt.reg)
+        skip = self.new_label()
+        self.emit("beq", cnt.reg, ZERO, skip)
+        self.jmp(top)
+        self.place(skip)
+        self.release_tmp(cnt)
+
+    def alloc_temp(self, n):
+        """A fresh frame area of n words (released with the enclosing scope)."""
+        slot = self.local_top
+        self.local_top += max(1, n)
+        self.local_max = max(self.local_max, self.local_top)
+        return slot
 
     # ------------------------------------------------------------ constants evaluation (no code)
 
@@ -613,11 +674,40 @@ class FuncGen:
             idx = 0
             for e in init.exprs:
                 if isinstance(e, c_ast.NamedInitializer):
-                    idx = self.eval_const_int(e.name[0])
+                    d = e.name[0]
+                    if isinstance(d, c_ast.ID):
+                        raise CompileError("field designator in array initializer", e)
+                    idx = self.eval_const_int(d)
                 idx += 1
                 count = max(count, idx)
             return count
         raise CompileError("invalid array initializer", init)
+
+    def designate(self, ty, names):
+        """Walk a designator list (.field / [index]); returns (word offset, target type, first index)."""
+        off = 0
+        first = None
+        for d in names:
+            if isinstance(d, c_ast.ID):
+                if not ty.is_struct():
+                    raise CompileError("field designator on a non-struct", d)
+                found = ty.find(d.name)
+                if not found:
+                    raise CompileError(f"{ty} has no member '{d.name}'", d)
+                m, extra = found
+                off += extra + m.offset
+                if first is None:
+                    first = ty.members.index(m) if m in ty.members else 0
+                ty = m.type
+            else:
+                if not ty.is_array():
+                    raise CompileError("index designator on a non-array", d)
+                idx = self.eval_const_int(d)
+                off += idx * ty.elem.size
+                if first is None:
+                    first = idx
+                ty = ty.elem
+        return off, ty, first
 
     def fill_init(self, words, base, ty, init):
         """Write static initializer `init` for an object of type `ty` at words[base:]."""
@@ -633,8 +723,10 @@ class FuncGen:
             idx = 0
             for e in init.exprs:
                 if isinstance(e, c_ast.NamedInitializer):
-                    idx = self.eval_const_int(e.name[0])
-                    e = e.expr
+                    off, t, first = self.designate(ty, e.name)
+                    self.fill_init(words, base + off, t, e.expr)
+                    idx = first + 1
+                    continue
                 if ty.count is not None and idx >= ty.count:
                     raise CompileError("too many initializers", init)
                 self.fill_init(words, base + idx * elem.size, elem, e)
@@ -647,13 +739,9 @@ class FuncGen:
             idx = 0
             for e in init.exprs:
                 if isinstance(e, c_ast.NamedInitializer):
-                    name = e.name[0].name
-                    found = ty.find(name)
-                    if not found:
-                        raise CompileError(f"no member {name}", e)
-                    m, extra = found
-                    self.fill_init(words, base + extra + m.offset, m.type, e.expr)
-                    idx = members.index(m) + 1 if m in members else idx
+                    off, t, first = self.designate(ty, e.name)
+                    self.fill_init(words, base + off, t, e.expr)
+                    idx = first + 1
                     continue
                 if idx >= len(members):
                     raise CompileError("too many initializers", init)
@@ -740,15 +828,21 @@ class FuncGen:
             g = self.comp.string_obj(node.value, node)
             self.comp.need(g)
             return Val(Ptr(g.type), sym=g)
-        if isinstance(node, c_ast.FuncCall):
-            v = self.rvalue(node)
-            if v.type.is_struct():
-                raise CompileError("struct-returning functions are not supported", node)
+        if isinstance(node, c_ast.CompoundLiteral):
+            ty = self.comp.build_type(node.type, self.scope, self)
+            if isinstance(ty, Array) and ty.count is None:
+                ty = Array(ty.elem, self.init_count(ty, node.init))
+            slot = self.alloc_temp(ty.size if (ty.is_array() or ty.is_struct()) else 1)
+            self.local_init(Val(Ptr(ty), sp=True, off=slot), ty, node.init)
+            return Val(Ptr(ty), sp=True, off=slot)
         raise CompileError(f"expression is not an lvalue ({type(node).__name__})", node)
 
     def addr_of_aggregate(self, node):
         if isinstance(node, c_ast.FuncCall):
-            raise CompileError("struct-returning functions are not supported", node)
+            v = self.rvalue(node)
+            if not v.type.is_struct():
+                raise CompileError("member access on a non-struct", node)
+            return v.copy(type=Ptr(v.type))
         return self.addr_of(node)
 
     def ptr_add_const(self, v, k):
@@ -899,6 +993,9 @@ class FuncGen:
                 return Val(Ptr(sym.type), sym=sym)
             return self.load(Val(Ptr(sym.type), sym=sym))
         raise CompileError(f"'{node.name}' is not a value", node)
+
+    def e_CompoundLiteral(self, node, discard):
+        return self.load(self.addr_of(node))
 
     def e_ArrayRef(self, node, discard):
         return self.load(self.addr_of(node))
@@ -1205,21 +1302,18 @@ class FuncGen:
 
     def copy_words(self, dst, src, n):
         """Copy n words from address src to address dst (consumes both)."""
+        n = max(1, n)
+        src = self.to_reg(src, keep=(dst.tmp,) if dst.tmp is not None else ())
+        dst = self.to_reg(dst, keep=(src.tmp,))
         if n <= 8:
-            src = self.to_reg(src, keep=(dst.tmp,) if dst.tmp is not None else ())
-            dst = self.to_reg(dst, keep=(src.tmp,))
             sr, dr = self.regs2(src, dst)
             for i in range(n):
                 self.emit("lw", sr, AT, i)
                 self.emit("sw", dr, AT, i)
-            self.release(src)
-            self.release(dst)
-            return
-        g = self.comp.runtime_func("__memcpy")
-        dst = dst.copy(type=Ptr(cty.CHAR))
-        src = src.copy(type=Ptr(cty.CHAR))
-        r = self.call(g, [dst, src, const_val(UINT, n)], cty.VOID, g.type.params, False)
-        self.release(r)
+        else:
+            self.copy_loop(src.tmp, dst.tmp, n)
+        self.release(src)
+        self.release(dst)
 
     def compound_assign(self, node, binop, discard):
         lty = self.lvalue_type(node.lvalue)
@@ -1896,11 +1990,16 @@ class FuncGen:
             if self.ret_type.is_void():
                 v = self.expr(node.expr, True)
                 self.release(v)
+            elif self.ret_type.is_struct():
+                v = self.rvalue(node.expr)
+                if not v.type.is_struct():
+                    raise CompileError("incompatible return value", node)
+                dst = self.new_tmp(keep=(v.tmp,) if v.tmp is not None else ())
+                self.emit("lw", SP, dst.reg, 1)
+                self.copy_words(Val(Ptr(self.ret_type), tmp=dst), v, self.ret_type.size)
             else:
                 v = self.rvalue(node.expr)
                 v = self.conv(v, self.ret_type)
-                if v.type.is_struct():
-                    raise CompileError("returning structs is not supported", node)
                 self.to_r1_final(v)
         self.emit("ret")
 
@@ -2052,49 +2151,50 @@ class FuncGen:
 
     def local_init(self, addr, ty, init):
         """Initialize the object at address Val `addr` (no tmp) with `init`."""
+        sub = lambda off, t: addr.copy(type=Ptr(t), off=addr.off + off)
         if ty.is_array():
             elem = ty.elem
-            count = ty.count
             if isinstance(init, c_ast.Constant) and init.type == "string" and elem.is_int():
                 chars = self.comp.decode_string(init.value, init)
-                for i in range(count):
+                for i in range(ty.count):
                     ch = chars[i] if i < len(chars) else 0
-                    self.store_to(addr.copy(type=Ptr(elem), off=addr.off + i * elem.size), const_val(INT, ch))
+                    self.store_to(sub(i * elem.size, elem), const_val(INT, ch))
                 return
             if not isinstance(init, c_ast.InitList):
                 raise CompileError("array initializer must be a list", init)
-            done = set()
+            full = ty.count == len(init.exprs) and not any(isinstance(e, c_ast.NamedInitializer) for e in init.exprs)
+            if not full:
+                self.zero_fill(addr, ty)
             idx = 0
             for e in init.exprs:
                 if isinstance(e, c_ast.NamedInitializer):
-                    idx = self.eval_const_int(e.name[0])
-                    e = e.expr
-                self.local_init(addr.copy(type=Ptr(elem), off=addr.off + idx * elem.size), elem, e)
-                done.add(idx)
+                    off, t, first = self.designate(ty, e.name)
+                    self.local_init(sub(off, t), t, e.expr)
+                    idx = first + 1
+                    continue
+                if idx >= ty.count:
+                    raise CompileError("too many initializers", init)
+                self.local_init(sub(idx * elem.size, elem), elem, e)
                 idx += 1
-            for i in range(count):
-                if i not in done:
-                    self.zero_fill(addr.copy(type=Ptr(elem), off=addr.off + i * elem.size), elem)
             return
         if ty.is_struct():
             if isinstance(init, c_ast.InitList):
                 members = ty.members if not ty.is_union else ty.members[:1]
-                done = set()
+                full = len(init.exprs) == len(members) and not any(isinstance(e, c_ast.NamedInitializer) for e in init.exprs)
+                if not full:
+                    self.zero_fill(addr, ty)
                 idx = 0
                 for e in init.exprs:
                     if isinstance(e, c_ast.NamedInitializer):
-                        m, extra = ty.find(e.name[0].name)
-                        self.local_init(addr.copy(type=Ptr(m.type), off=addr.off + m.offset + extra), m.type, e.expr)
-                        done.add(id(m))
-                        idx = members.index(m) + 1
+                        off, t, first = self.designate(ty, e.name)
+                        self.local_init(sub(off, t), t, e.expr)
+                        idx = first + 1
                         continue
+                    if idx >= len(members):
+                        raise CompileError("too many initializers", init)
                     m = members[idx]
-                    self.local_init(addr.copy(type=Ptr(m.type), off=addr.off + m.offset), m.type, e)
-                    done.add(id(m))
+                    self.local_init(sub(m.offset, m.type), m.type, e)
                     idx += 1
-                for m in members:
-                    if id(m) not in done:
-                        self.zero_fill(addr.copy(type=Ptr(m.type), off=addr.off + m.offset), m.type)
                 return
             src = self.rvalue(init)
             if not src.type.is_struct():
@@ -2141,9 +2241,11 @@ class FuncGen:
             params = []
         self.nparams = len(params)
         slot = 1
+        if self.ret_type.is_struct():
+            slot += 1  # hidden pointer to the caller's result area at slot 1
         for p, pty in zip(params, ftype.params or []):
             self.scope.names[p.name] = Local(pty, slot)
-            slot += 1
+            slot += max(1, pty.size) if pty.is_struct() else 1
         self.local_top = slot + (VARARG_SLOTS if self.variadic else 0)
         self.local_max = self.local_top
         self.ret_label = self.new_label()
@@ -2195,6 +2297,8 @@ class FuncGen:
                     return spill_base + x.n
                 if x.kind == "fs":
                     return self.p.const(fs * x.n)
+                if x.kind == "argaddr":
+                    return self.p.const(fs + 1 + x.n)
             return x
 
         # consecutive labels name the same address: keep the first, alias the rest

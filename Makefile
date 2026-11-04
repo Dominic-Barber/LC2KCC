@@ -9,7 +9,7 @@ COREMARK_SRCS = $(addprefix $(COREMARK)/,core_list_join.c core_main.c core_matri
 .PHONY: test hello coremark-size clean
 
 test:
-	PYTHONPATH=$(CURDIR)/src $(PY) -m unittest discover -s tests -v
+	PYTHONPATH=$(CURDIR)/src $(PY) -m unittest discover -s tests -t tests -v
 
 $(BUILD):
 	mkdir -p $@

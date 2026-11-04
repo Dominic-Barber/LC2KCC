@@ -14,8 +14,9 @@ INCLUDE_DIR = Path(__file__).parent / "include"
 
 
 class CompileError(Exception):
-    def __init__(self, message: str, node: c_ast.Node | None = None):
-        where = f"{node.coord}: " if node is not None and node.coord else ""
+    def __init__(self, message: str, node=None):
+        coord = getattr(node, "coord", node)
+        where = f"{coord}: " if coord else ""
         super().__init__(where + message)
 
 

@@ -429,6 +429,10 @@ class Compiler:
                     g.init = decl.init
                     g.tu = tu
                     g.type = ty
+                    if isinstance(ty, Array) and ty.count is None:
+                        from .funcgen import FuncGen
+
+                        g.type = Array(ty.elem, FuncGen(self, None, scope).init_count(ty, decl.init))
                 if not g.defined:
                     g.defined = True
                     g.tu = tu
