@@ -40,6 +40,7 @@ coremark-native: | $(BUILD)
 fuzz:
 	$(PY) tools/fuzz.py -n 500
 	$(PY) tools/fuzz.py -n 500 --mode stmt
+	$(PY) tools/fuzz.py -n 200 --mode ll
 
 # Native x86-32 -Os size of CoreMark with the LC-2K port (compile only).
 coremark-size: | $(BUILD)
