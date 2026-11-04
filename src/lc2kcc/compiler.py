@@ -18,6 +18,10 @@ from .labels import Mangler
 RESERVED = ("Stack", "Result", "spinit")
 
 
+def s32w(v: int) -> int:
+    return v - (1 << 32) if v >> 31 else v
+
+
 # ---------------------------------------------------------------- symbols
 
 
@@ -47,6 +51,7 @@ class GObj:
     needed: bool = False
     coord: object = None
     weak: bool = False  # library definition that a program may replace
+    llval: int | None = None  # for 64-bit constants: the value, as an unsigned 64-bit integer
 
     @property
     def size(self):
@@ -118,7 +123,7 @@ def parse_int_name(names: list[str], node) -> cty.Type:
     if rest in ([], ["int"], ["long"], ["int", "long"]):
         return cty.UINT if unsigned else cty.INT
     if rest in (["long", "long"], ["int", "long", "long"]):
-        raise CompileError("long long is not supported (the sparse-ILP32 model has 32-bit words)", node)
+        return cty.ULLONG if unsigned else cty.LLONG
     if rest in (["float"], ["double"], ["double", "long"]):
         raise CompileError("floating point is not supported", node)
     if rest == ["_Bool"]:
@@ -241,6 +246,16 @@ class Compiler:
             else:
                 raise CompileError(f"unknown escape sequence \\{ch}", node)
         return out
+
+    def ll_const(self, value: int) -> GObj:
+        """Read-only data object holding a 64-bit constant (low word at +0, high word at +4)."""
+        value &= (1 << 64) - 1
+        key = ("ll", value)
+        if key not in self.strings:
+            g = GObj("llconst", cty.LLONG, "str", static=True, words=[s32w(value & 0xFFFFFFFF), 0, 0, 0, s32w(value >> 32), 0, 0, 0], defined=True)
+            g.llval = value
+            self.strings[key] = g
+        return self.strings[key]
 
     def string_obj(self, text: str, node=None) -> GObj:
         chars = self.decode_string(text, node) + [0]
@@ -514,9 +529,9 @@ class Compiler:
 
         from .frontend import parse_file
 
-        for name in ("rt", "libc"):
+        for name in ("rt", "ll", "libc"):
             path = Path(__file__).parent / "runtime" / f"{name}.c"
-            self.add_tu(parse_file(path), "runtime" if name == "rt" else "runtime:libc")
+            self.add_tu(parse_file(path), "runtime:libc" if name == "libc" else "runtime")
 
     def need_everything(self):
         """Compile all user code, reachable or not, so errors in dead code are reported too."""

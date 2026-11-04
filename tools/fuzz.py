@@ -202,10 +202,88 @@ class Gen2(Gen):
         return "\n".join(out) + "\n"
 
 
+class Gen3(Gen):
+    """64-bit programs: long long / unsigned long long mixed with 32-bit types."""
+
+    TY = ["long long", "unsigned long long", "int", "unsigned", "short", "unsigned char"]
+
+    def const(self):
+        r = self.r
+        k = r.random()
+        if k < 0.3:
+            return str(r.randint(0, 40))
+        if k < 0.5:
+            return f"{r.randint(-100000, 100000)}LL"
+        if k < 0.7:
+            return f"0x{r.getrandbits(r.choice([8, 16, 32, 48, 64])):x}ULL"
+        if k < 0.85:
+            return r.choice(["(-1LL)", "0LL", "1LL", "9223372036854775807LL", "(-9223372036854775807LL - 1)", "4294967296LL", "2147483648LL", "0xffffffffULL"])
+        return f"({r.randint(-2**31, 2**31 - 1)})"
+
+    def expr(self, d):
+        r = self.r
+        if d <= 0 or r.random() < 0.15:
+            if r.random() < 0.65 and self.vars:
+                return self.pick_var()[0]
+            return self.const()
+        k = r.random()
+        a = lambda: self.expr(d - 1)
+        if k < 0.35:
+            return f"({a()} {r.choice(['+', '-', '*', '&', '|', '^'])} {a()})"
+        if k < 0.45:
+            return f"({a()} {r.choice(['/', '%'])} (({a()} & 255) + 1))"
+        if k < 0.57:
+            return f"((({r.choice(['long long', 'unsigned long long'])})({a()})) {r.choice(['<<', '>>'])} ({a()} & 63))"
+        if k < 0.64:
+            return f"((({r.choice(['long long', 'unsigned long long'])})({a()})) {r.choice(['<<', '>>'])} {r.randint(0, 63)})"
+        if k < 0.76:
+            return f"({a()} {r.choice(['<', '<=', '>', '>=', '==', '!='])} {a()})"
+        if k < 0.82:
+            return f"({a()} {r.choice(['&&', '||'])} {a()})"
+        if k < 0.88:
+            return f"({r.choice(['-', '~', '!'])} {a()})"
+        if k < 0.93:
+            return f"(({r.choice(self.TY)})({a()}))"
+        return f"({a()} ? {a()} : {a()})"
+
+    def program(self):
+        r = self.r
+        out = ["static int mixh = 0; static void mix(long long v) { mixh = mixh * 33 + (int)v + (int)(v >> 32); }",
+               "long long g0 = 5000000000LL; unsigned long long g1 = 0xfedcba9876543210ULL; int g2 = -7;",
+               "long long f0(long long a, int b, unsigned long long c) { return a * b + (long long)(c >> 3); }",
+               "int main(void) {"]
+        for i in range(r.randint(3, 6)):
+            ty = r.choice(self.TY)
+            out.append(f"  {ty} v{i} = {self.expr(1)};")
+            self.vars.append((f"v{i}", ty))
+        self.vars += [("g0", "long long"), ("g1", "unsigned long long"), ("g2", "int")]
+        for _ in range(r.randint(8, 14)):
+            tgt = self.pick_var()[0]
+            c = r.random()
+            if c < 0.6:
+                out.append(f"  {tgt} = {self.expr(r.randint(1, 4))};")
+            elif c < 0.75:
+                op = r.choice(['+=', '-=', '^=', '|=', '&=', '*=', '<<=', '>>='])
+                rhs = self.expr(2)
+                if op in ('<<=', '>>='):
+                    rhs = f"({rhs} & 15)"
+                out.append(f"  {tgt} {op} {rhs};")
+            elif c < 0.85:
+                out.append(f"  if ({self.expr(2)}) {tgt} = {self.expr(2)}; else {tgt} = {self.expr(2)};")
+            elif c < 0.92:
+                out.append(f"  {tgt}++; --{tgt};")
+            else:
+                out.append(f"  {tgt} = f0({self.expr(2)}, {self.expr(1)}, {self.expr(2)});")
+            out.append(f"  mix({tgt});")
+        out.append("  return mixh;")
+        out.append("}")
+        return "\n".join(out) + "\n"
+
+
 def run_one(args):
     seed, keep, mode = args
     rng = random.Random(seed)
-    src = (Gen2 if mode == 'stmt' else Gen)(rng).program()
+    src = {'stmt': Gen2, 'll': Gen3}.get(mode, Gen)(rng).program()
     d = tempfile.mkdtemp(prefix="fz")
     c = os.path.join(d, "t.c")
     Path(c).write_text(src)
@@ -236,7 +314,7 @@ def main():
     ap.add_argument("-n", type=int, default=200)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--keep", action="store_true")
-    ap.add_argument("--mode", choices=["expr", "stmt"], default="expr")
+    ap.add_argument("--mode", choices=["expr", "stmt", "ll"], default="expr")
     args = ap.parse_args()
     bad = 0
     with ProcessPoolExecutor() as ex:

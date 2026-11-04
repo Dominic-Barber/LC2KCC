@@ -23,14 +23,14 @@ from pycparser import c_ast
 
 from . import cty
 from .compiler import Addr, EnumConst, GObj, Local, Scope, TypedefSym
-from .cty import INT, UINT, Array, Func, Ptr
+from .cty import INT, LLONG, UINT, ULLONG, Array, Func, Ptr
 from .frontend import CompileError
 
 ZERO, SP, AT, RA = 0, 5, 6, 7
 
 # Expression temporaries. LC2KCC_TEMPS=123 shrinks the pool to stress-test spilling.
 TEMPS = tuple(int(c) for c in os.environ.get("LC2KCC_TEMPS", "1234"))
-VARARG_SLOTS = 12
+VARARG_SLOTS = 64
 
 
 class NotConstant(Exception):
@@ -399,6 +399,10 @@ class FuncGen:
             return Val(to)
         if frm is to:
             return v
+        if to.is_struct() and frm.is_struct():
+            return v.copy(type=to)
+        if to.is_ll() or frm.is_ll():
+            return self.conv_ll(v, to)
         if to is cty.BOOL:
             # conversion to _Bool is "!= 0", not truncation
             if v.is_const:
@@ -432,6 +436,171 @@ class FuncGen:
         if to.is_struct() and frm.is_struct():
             return v.copy(type=to)
         raise CompileError(f"cannot convert {frm} to {to}")
+
+    # ------------------------------------------------------------ 64-bit integers
+    #
+    # A long long is a two-word object (low word, high word); like a struct, its
+    # "value" is the address of that object. All arithmetic calls runtime/ll.c.
+
+    def ll_const_val(self, ty, value):
+        g = self.comp.ll_const(value)
+        self.comp.need(g)
+        return Val(ty, sym=g)
+
+    @staticmethod
+    def ll_value(v):
+        """The constant (unsigned 64-bit) value of v, or None."""
+        if v.type.is_ll() and v.tmp is None and not v.sp and v.sym is not None and v.sym.llval is not None and v.off == 0:
+            return v.sym.llval
+        return None
+
+    def conv_ll(self, v, to):
+        frm = v.type
+        if to.is_ll():
+            if frm.is_ll():
+                return v.copy(type=to)
+            if not (frm.is_int() or frm.is_ptr()):
+                raise CompileError(f"cannot convert {frm} to {to}")
+            signed = frm.is_int() and frm.signed
+            if v.is_const:
+                x = s32(v.off) if signed else v.off & 0xFFFFFFFF
+                return self.ll_const_val(to, x)
+            slot = self.alloc_temp(8)
+            v = self.to_reg(v)
+            r = self.reg_of(v.tmp)
+            self.emit("sw", SP, r, slot)
+            if signed:
+                t = self.new_tmp(keep=(v.tmp,))
+                self.emit("add", self.reg_of(v.tmp, keep=(t,)), ZERO, t.reg)
+                hi = self.sign_bit(Val(INT, tmp=t), INT)
+                self.emit("sw", SP, self.reg_of(hi.tmp), slot + 4)
+                self.release(hi)
+            else:
+                self.emit("sw", SP, ZERO, slot + 4)
+            self.release(v)
+            return Val(to, sp=True, off=slot)
+        # from long long to a scalar: truncate to the low word
+        if to is cty.BOOL:
+            r = self.ll_to_bool(v)
+            r.type = to
+            r.bits = 1
+            return r
+        if not (to.is_int() or to.is_ptr()):
+            raise CompileError(f"cannot convert {frm} to {to}")
+        lo = self.load(v.copy(type=Ptr(UINT)))
+        return self.conv(lo, to)
+
+    def ll_to_bool(self, v):
+        g = self.comp.runtime_func("__ll_ne0")
+        return self.call(g, [v], INT, g.type.params, False)
+
+    def call_ll(self, name, args, ty):
+        g = self.comp.runtime_func(name)
+        r = self.call(g, args, g.type.ret, g.type.params, False)
+        r.type = ty
+        return r
+
+    def arith_ll(self, op, a, b, node):
+        ta, tb = a.type, b.type
+        if ta.is_ptr() or tb.is_ptr():
+            if ta.is_ll():
+                a = self.conv(a, INT)
+            if tb.is_ll():
+                b = self.conv(b, INT)
+            return self.arith(op, a, b, node)
+        if op in ("<<", ">>"):
+            if not ta.is_ll():
+                return self.arith(op, a, self.conv(b, INT), node)
+            count = self.conv(b, INT)
+            x, n = self.ll_value(a), count.off if count.is_const else None
+            if x is not None and n is not None:
+                n &= 63
+                if op == "<<":
+                    return self.ll_const_val(ta, (x << n) & ((1 << 64) - 1))
+                sx = x - (1 << 64) if (ta.signed and x >> 63) else x
+                return self.ll_const_val(ta, (sx >> n) & ((1 << 64) - 1))
+            name = "__ll_shl" if op == "<<" else ("__ll_shrs" if ta.signed else "__ll_shru")
+            return self.call_ll(name, [a, count], ta)
+        ty = ULLONG if (ta.is_ll() and not ta.signed) or (tb.is_ll() and not tb.signed) else LLONG
+        a, b = self.conv(a, ty), self.conv(b, ty)
+        x, y = self.ll_value(a), self.ll_value(b)
+        if x is not None and y is not None and not (op in ("/", "%") and y == 0):
+            return self.ll_const_val(ty, self.fold_ll(op, x, y, ty.signed))
+        signed = ty.signed
+        names = {
+            "+": "__ll_add", "-": "__ll_sub", "*": "__ll_mul", "&": "__ll_and", "|": "__ll_or", "^": "__ll_xor",
+            "/": "__ll_sdiv" if signed else "__ll_udiv", "%": "__ll_smod" if signed else "__ll_umod",
+        }
+        if op not in names:
+            raise CompileError(f"unsupported operator {op} on long long", node)
+        return self.call_ll(names[op], [a, b], ty)
+
+    @staticmethod
+    def fold_ll(op, x, y, signed):
+        mask = (1 << 64) - 1
+        sx = x - (1 << 64) if (signed and x >> 63) else x
+        sy = y - (1 << 64) if (signed and y >> 63) else y
+        if op == "+":
+            r = x + y
+        elif op == "-":
+            r = x - y
+        elif op == "*":
+            r = x * y
+        elif op == "&":
+            r = x & y
+        elif op == "|":
+            r = x | y
+        elif op == "^":
+            r = x ^ y
+        else:
+            q = abs(sx) // abs(sy)
+            if (sx < 0) != (sy < 0):
+                q = -q
+            r = q if op == "/" else sx - q * sy
+        return r & mask
+
+    def dup_addr(self, addr):
+        """Two independent Vals for the same address (one may be used for a load, one for a store)."""
+        if addr.tmp is None:
+            return addr, addr.copy()
+        p = self.to_reg(addr)
+        t = self.new_tmp(keep=(p.tmp,))
+        self.emit("add", self.reg_of(p.tmp, keep=(t,)), ZERO, t.reg)
+        return p, Val(p.type, tmp=t)
+
+    def copy_ll(self, dst, src):
+        self.copy_words(dst, src, 8)
+
+    def ll_incdec(self, addr, lty, post, up, discard):
+        one = self.ll_const_val(lty, 1)
+        a1, rest = self.dup_addr(addr)
+        a2, a3 = self.dup_addr(rest)
+        old = None
+        if post and not discard:
+            old = self.alloc_temp(8)
+            self.copy_ll(Val(Ptr(lty), sp=True, off=old), a1.copy(type=Ptr(lty)))
+        else:
+            self.release(a1)
+        res = self.arith_ll("+" if up else "-", a2.copy(type=lty), one, None)
+        self.copy_ll(a3.copy(type=Ptr(lty)), res)
+        if discard:
+            return None
+        return Val(lty, sp=True, off=old) if old is not None else res
+
+    def compound_assign_ll(self, node, binop, discard):
+        lty = self.lvalue_type(node.lvalue)
+        rhs = self.rvalue(node.rvalue)
+        addr = self.addr_of(node.lvalue)
+        a1, a2 = self.dup_addr(addr)
+        res = self.arith(binop, a1.copy(type=lty), rhs, node)
+        res = self.conv(res, lty)
+        if discard:
+            self.copy_ll(a2.copy(type=Ptr(lty)), res)
+            return None
+        slot = self.alloc_temp(8)
+        self.copy_ll(Val(Ptr(lty), sp=True, off=slot), res)
+        self.copy_ll(a2.copy(type=Ptr(lty)), Val(lty, sp=True, off=slot))
+        return Val(lty, sp=True, off=slot)
 
     @staticmethod
     def value_range(v):
@@ -523,7 +692,7 @@ class FuncGen:
         arg_vals = []
         if ret_type.is_struct():
             # hidden first argument: where the callee stores the returned struct
-            tmp = self.alloc_temp(ret_type.size)
+            tmp = self.alloc_temp(ret_type.words)
             arg_vals.append(Val(Ptr(ret_type), sp=True, off=tmp))
         nfixed = len(arg_vals) + (len(params) if params is not None else 0)
         for i, a in enumerate(args):
@@ -536,10 +705,10 @@ class FuncGen:
         off = 0
         for a in arg_vals:
             offsets.append(off)
-            off += max(1, a.type.size) if a.type.is_struct() else 1
+            off += a.type.words if a.type.is_struct() else 1
         fixed_words = 0
         for a in arg_vals[:nfixed]:
-            fixed_words += max(1, a.type.size) if a.type.is_struct() else 1
+            fixed_words += a.type.words if a.type.is_struct() else 1
         if variadic and off - fixed_words > VARARG_SLOTS:
             raise CompileError("too many variadic arguments", node)
         for o, a in zip(offsets, arg_vals):
@@ -595,7 +764,7 @@ class FuncGen:
 
     def copy_to_arg(self, off, src):
         """Copy a struct argument (address Val src) into the outgoing argument area."""
-        n = max(1, src.type.size)
+        n = src.type.words
         src = self.to_reg(src)
         sr = self.reg_of(src.tmp)
         if n <= 8:
@@ -704,6 +873,21 @@ class FuncGen:
 
     def fill_init(self, words, base, ty, init):
         """Write static initializer `init` for an object of type `ty` at words[base:]."""
+        if ty.is_ll():
+            if isinstance(init, c_ast.InitList) and len(init.exprs) == 1:
+                init = init.exprs[0]
+            prev = self.noemit
+            self.noemit = True
+            try:
+                x = self.ll_value(self.conv(self.rvalue(init), ty))
+            except NotConstant:
+                x = None
+            finally:
+                self.noemit = prev
+            if x is None:
+                raise CompileError("initializer is not a compile-time constant", init)
+            words[base], words[base + 4] = s32(x & 0xFFFFFFFF), s32(x >> 32)
+            return
         if ty.is_array():
             elem = ty.elem
             if isinstance(init, c_ast.Constant) and init.type == "string" and elem.is_int():
@@ -959,8 +1143,10 @@ class FuncGen:
             val, decimal = int(digits, 8), False
         else:
             val, decimal = int(digits), True
+        if val >= 1 << 64:
+            raise CompileError("integer constant is too large", node)
         if longlong or val >= 1 << 32:
-            raise CompileError("64-bit integer constants are not supported", node)
+            return self.ll_const_val(ULLONG if unsigned_suffix or val >= 1 << 63 else LLONG, val)
         if unsigned_suffix:
             ty = UINT
         elif val < 1 << 31:
@@ -1002,9 +1188,9 @@ class FuncGen:
         if to.is_void():
             self.release(v)
             return Val(cty.VOID)
-        if not to.is_scalar():
+        if not (to.is_scalar() or to.is_ll()):
             raise CompileError(f"cannot cast to {to}", node)
-        if not (v.type.is_scalar() or v.type.is_array()):
+        if not (v.type.is_scalar() or v.type.is_array() or v.type.is_ll()):
             raise CompileError("cannot cast a non-scalar", node)
         return self.conv(v, to)
 
@@ -1029,6 +1215,14 @@ class FuncGen:
             self.place(lend)
             return None
         rty = self.ternary_type(cty.decay(self.static_type(node.iftrue)), cty.decay(self.static_type(node.iffalse)))
+        if rty.is_struct():
+            slot = self.alloc_temp(rty.words)
+            self.copy_words(Val(Ptr(rty), sp=True, off=slot), self.conv(self.rvalue(node.iftrue), rty), rty.words)
+            self.jmp(lend)
+            self.place(lelse)
+            self.copy_words(Val(Ptr(rty), sp=True, off=slot), self.conv(self.rvalue(node.iffalse), rty), rty.words)
+            self.place(lend)
+            return Val(rty, sp=True, off=slot)
         self.to_r1(self.conv(self.rvalue(node.iftrue), rty))
         self.jmp(lend)
         self.place(lelse)
@@ -1037,6 +1231,10 @@ class FuncGen:
         return Val(rty, tmp=self.new_tmp(reg=1))
 
     def ternary_type(self, a, b):
+        if a.is_ll() or b.is_ll():
+            if (a.is_ll() and not a.signed) or (b.is_ll() and not b.signed):
+                return ULLONG
+            return LLONG
         if a.is_int() and b.is_int():
             return cty.common(a, b)
         if a.is_ptr():
@@ -1087,6 +1285,8 @@ class FuncGen:
                 return const_val(INT, 0 if c else 1)
             return self.bool_value(node)
         v = self.rvalue(node.expr)
+        if v.type.is_ll():
+            return self.unary_ll(op, v, node)
         if not v.type.is_scalar():
             raise CompileError(f"invalid operand to unary {op}", node)
         if op == "+":
@@ -1102,6 +1302,20 @@ class FuncGen:
             self.emit("nor", r, r, r)
             v.bits = None
             return v
+        raise CompileError(f"unsupported unary operator {op}", node)
+
+    def unary_ll(self, op, v, node):
+        x = self.ll_value(v)
+        if op == "+":
+            return v
+        if op == "-":
+            if x is not None:
+                return self.ll_const_val(v.type, -x)
+            return self.call_ll("__ll_neg", [v], v.type)
+        if op == "~":
+            if x is not None:
+                return self.ll_const_val(v.type, ~x)
+            return self.call_ll("__ll_not", [v], v.type)
         raise CompileError(f"unsupported unary operator {op}", node)
 
     def addr_of_for_amp(self, node):
@@ -1169,6 +1383,8 @@ class FuncGen:
                     return INT
                 if ta.is_ptr():
                     return ta
+            if ta.is_ll() or tb.is_ll():
+                return ULLONG if (ta.is_ll() and not ta.signed) or (tb.is_ll() and not tb.signed) else LLONG
             if not (ta.is_int() and tb.is_int()):
                 raise CompileError(f"invalid operands to '{op}'", node)
             return cty.common(ta, tb)
@@ -1215,6 +1431,8 @@ class FuncGen:
         up = op.endswith("++")
         addr = self.addr_of(node.expr)
         ty = addr.type.target
+        if ty.is_ll():
+            return self.ll_incdec(addr, ty, post, up, discard)
         if not ty.is_scalar():
             raise CompileError("invalid operand to ++/--", node)
         step = ty.target.size if ty.is_ptr() and not ty.target.is_void() and not ty.target.is_func() else 1
@@ -1262,7 +1480,7 @@ class FuncGen:
     def assign(self, node, discard):
         lty = self.lvalue_type(node.lvalue)
         if lty.is_struct():
-            return self.assign_struct(node)
+            return self.assign_struct(node, discard)
         if lty.is_array():
             raise CompileError("assignment to an array", node)
         rhs = self.rvalue(node.rvalue)
@@ -1285,14 +1503,22 @@ class FuncGen:
     def lvalue_type(self, node):
         return self.static_type(node)
 
-    def assign_struct(self, node):
+    def assign_struct(self, node, discard=True):
         lty = self.lvalue_type(node.lvalue)
         src = self.rvalue(node.rvalue)
-        if not src.type.is_struct():
+        if lty.is_ll():
+            src = self.conv(src, lty)
+        elif not src.type.is_struct():
             raise CompileError("incompatible struct assignment", node)
-        dst = self.addr_of(node.lvalue)
-        self.copy_words(dst, src, lty.size)
-        return Val(cty.VOID)
+        n = lty.words
+        if discard:
+            self.copy_words(self.addr_of(node.lvalue), src, n)
+            return None
+        # the value of the expression: copy through a temporary
+        slot = self.alloc_temp(n)
+        self.copy_words(Val(Ptr(lty), sp=True, off=slot), src, n)
+        self.copy_words(self.addr_of(node.lvalue), Val(lty, sp=True, off=slot), n)
+        return Val(lty, sp=True, off=slot)
 
     def copy_words(self, dst, src, n):
         """Copy n words from address src to address dst (consumes both)."""
@@ -1311,6 +1537,8 @@ class FuncGen:
 
     def compound_assign(self, node, binop, discard):
         lty = self.lvalue_type(node.lvalue)
+        if lty.is_ll():
+            return self.compound_assign_ll(node, binop, discard)
         if not lty.is_scalar():
             raise CompileError("invalid compound assignment", node)
         rhs = self.rvalue(node.rvalue)
@@ -1354,6 +1582,8 @@ class FuncGen:
 
     def arith(self, op, a, b, node):
         ta, tb = a.type, b.type
+        if ta.is_ll() or tb.is_ll():
+            return self.arith_ll(op, a, b, node)
         if (ta.is_ptr() or tb.is_ptr()) and op in ("+", "-"):
             if op == "+":
                 if ta.is_ptr() and tb.is_int():
@@ -1636,6 +1866,8 @@ class FuncGen:
             res = self.helper_call_ty(name, [a, const_val(UINT, 1 << n)], ty)
             res.bits = None if a.bits is None else max(1, a.bits - n)
             return res
+        # like x86, use only the low 5 bits of a variable shift count (the C behavior is undefined above 31)
+        b = self.arith_ty("&", b, const_val(b.type, 31), b.type, node)
         a = self.to_reg(a, keep=(b.tmp,) if b.tmp else ())
         b = self.to_reg(b, keep=(a.tmp,))
         if op == "<<":
@@ -1784,6 +2016,8 @@ class FuncGen:
             self.branch_cmp(node.op, a, b, label, when, node)
             return
         v = self.rvalue(node)
+        if v.type.is_ll():
+            v = self.ll_to_bool(v)
         if not v.type.is_scalar():
             raise CompileError("scalar condition required", node)
         v = self.to_reg(v)
@@ -1810,9 +2044,23 @@ class FuncGen:
             self.jmp(label)
             self.place(skip)
 
+    def branch_cmp_ll(self, op, a, b, label, when, node):
+        """Compare with a 64-bit operand: three-way compare in the runtime, then test the sign."""
+        ta, tb = a.type, b.type
+        if ta.is_ptr() or tb.is_ptr():
+            raise CompileError("invalid comparison between pointer and long long", node)
+        signed = not ((ta.is_ll() and not ta.signed) or (tb.is_ll() and not tb.signed))
+        ty = LLONG if signed else ULLONG
+        a, b = self.conv(a, ty), self.conv(b, ty)
+        g = self.comp.runtime_func("__ll_cmps" if signed else "__ll_cmpu")
+        r = self.call(g, [a, b], INT, g.type.params, False)
+        self.branch_cmp(op, r, const_val(INT, 0), label, when, node)
+
     def branch_cmp(self, op, a, b, label, when, node):
         """Compare a and b; jump to label if (a op b) == when."""
         ta, tb = a.type, b.type
+        if ta.is_ll() or tb.is_ll():
+            return self.branch_cmp_ll(op, a, b, label, when, node)
         if not (ta.is_scalar() or ta.is_array()) or not (tb.is_scalar() or tb.is_array()):
             raise CompileError("invalid operands to comparison", node)
         ty = self.cmp_type(a, b)
@@ -2108,7 +2356,7 @@ class FuncGen:
                     raise CompileError("incompatible return value", node)
                 dst = self.new_tmp(keep=(v.tmp,) if v.tmp is not None else ())
                 self.emit("lw", SP, dst.reg, 1)
-                self.copy_words(Val(Ptr(self.ret_type), tmp=dst), v, self.ret_type.size)
+                self.copy_words(Val(Ptr(self.ret_type), tmp=dst), v, self.ret_type.words)
             else:
                 v = self.rvalue(node.expr)
                 v = self.conv(v, self.ret_type)
@@ -2270,6 +2518,13 @@ class FuncGen:
     def local_init(self, addr, ty, init):
         """Initialize the object at address Val `addr` (no tmp) with `init`."""
         sub = lambda off, t: addr.copy(type=Ptr(t), off=addr.off + off)
+        if ty.is_ll():
+            if isinstance(init, c_ast.InitList):
+                if len(init.exprs) != 1:
+                    raise CompileError("scalar initializer must have one value", init)
+                init = init.exprs[0]
+            self.copy_words(addr, self.conv(self.rvalue(init), ty), 8)
+            return
         if ty.is_array():
             elem = ty.elem
             if isinstance(init, c_ast.Constant) and init.type == "string" and elem.is_int():
@@ -2317,7 +2572,7 @@ class FuncGen:
             src = self.rvalue(init)
             if not src.type.is_struct():
                 raise CompileError("invalid struct initializer", init)
-            self.copy_words(addr, src, ty.size)
+            self.copy_words(addr, src, ty.words)
             return
         if isinstance(init, c_ast.InitList):
             if len(init.exprs) != 1:
@@ -2362,7 +2617,7 @@ class FuncGen:
             slot += 1  # hidden pointer to the caller's result area at slot 1
         for p, pty in zip(params, ftype.params or []):
             self.scope.names[p.name] = Local(pty, slot)
-            slot += max(1, pty.size) if pty.is_struct() else 1
+            slot += pty.words if pty.is_struct() else 1
         self.local_top = slot + (VARARG_SLOTS if self.variadic else 0)
         self.local_max = self.local_top
         self.ret_label = self.new_label()

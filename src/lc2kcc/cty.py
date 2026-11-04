@@ -27,6 +27,14 @@ class Type:
     def is_struct(self):
         return False
 
+    def is_ll(self):
+        return False
+
+    @property
+    def words(self):
+        """Words that carry a value of this type when it is copied or passed by value."""
+        return max(1, self.size)
+
     def is_scalar(self):
         return self.is_int() or self.is_ptr()
 
@@ -184,6 +192,30 @@ class Struct(Type):
 
     def __repr__(self):
         return f"{'union' if self.is_union else 'struct'} {self.tag or '<anon>'}"
+
+
+@dataclass(eq=False)
+class LongLong(Struct):
+    """64-bit integer: laid out exactly like struct { unsigned lo, hi; } (the low
+    word at the address, the high word at address+4; sizeof is 8 as on 32-bit
+    x86), which is what the runtime's `struct ll` is."""
+
+    signed: bool = True
+
+    def __post_init__(self):
+        self.define([("lo", UINT), ("hi", UINT)])
+        self._size = 8
+        self._align = 4
+
+    def is_ll(self):
+        return True
+
+    def __repr__(self):
+        return "long long" if self.signed else "unsigned long long"
+
+
+LLONG = LongLong(None, False, signed=True)
+ULLONG = LongLong(None, False, signed=False)
 
 
 def decay(ty: Type) -> Type:

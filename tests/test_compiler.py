@@ -106,6 +106,19 @@ class LibraryTest(unittest.TestCase):
         out = read_cstring(mem, assembled.symbols["Stdout"])
         self.assertEqual(out, "-1,2,3,5,7,9,ab|00042|ff|z|7  | -8|\n4000000000 22%\n")
 
+    def test_printf_long_long(self):
+        source = r"""
+        #include <stdio.h>
+        int main(void) {
+            long long a = -123456789012345LL;
+            unsigned long long b = 18446744073709551615ULL;
+            printf("%lld|%llu|%llx|%d|%5lld|%-5lld|", a, b, 0xdeadbeefcafeULL, 7, 12LL, 34LL);
+            return (int)(a % 1000);
+        }"""
+        result, _, asm, assembled, mem = run_source(source)
+        self.assertEqual(result, -345)
+        self.assertEqual(read_cstring(mem, assembled.symbols["Stdout"]), "-123456789012345|18446744073709551615|deadbeefcafe|7|   12|34   |")
+
     def test_program_may_replace_a_library_function(self):
         source = """
         #include <string.h>
@@ -132,7 +145,6 @@ class DiagnosticsTest(unittest.TestCase):
         cases = {
             "float": "int main(void) { float f = 1.0f; return 0; }",
             "double": "double d; int main(void) { return 0; }",
-            "long long": "int main(void) { long long x = 1; return 0; }",
             "bit-field": "struct B { int a : 3; }; int main(void) { return 0; }",
             "undeclared": "int main(void) { return x; }",
             "undefined function": "int f(void); int main(void) { return f(); }",

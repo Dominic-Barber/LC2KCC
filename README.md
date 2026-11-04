@@ -90,7 +90,10 @@ the label is the offset).
 **Runtime** (`src/lc2kcc/runtime.py`, hand-written assembly, emitted only if
 used): multiply (with a 16x16 lookup table fast path), shifts (the shift
 count is passed as `1 << n`), signed/unsigned compare. Division and `%` are
-in C (`src/lc2kcc/runtime/rt.c`), compiled with the program. The shift and
+in C (`src/lc2kcc/runtime/rt.c`), and so are 64-bit operations
+(`runtime/ll.c`) and a small libc (`runtime/libc.c`: string, stdlib, ctype and
+a `printf` family that writes to the `__stdout` buffer), all compiled with the
+program. The shift and
 multiply loops are bit-serial.
 
 **Output layout** (follows `../programs/_LC2K_Format.txt`, checked by
@@ -108,8 +111,8 @@ formats its report into `ee_outbuf`, which `lc2kcc run --dump ee_outbuf` prints.
 
 ## C support
 
-Supported: all integer types up to 32 bits (`char`, `short`, `int`, `long`,
-signed/unsigned), pointers, arrays (multi-dimensional, incomplete), structs,
+Supported: all integer types (`char`, `short`, `int`, `long`, `long long`,
+signed/unsigned; 64-bit operations call the runtime's `__ll_*` routines), pointers, arrays (multi-dimensional, incomplete), structs,
 unions (including anonymous members), enums, typedefs, function pointers,
 `static`/`extern`/`const`/`volatile`, string literals, initializers
 (positional, designated, nested, compound literals), every operator,
@@ -118,19 +121,19 @@ assignment and by-value arguments/results, multiple translation units, and
 `static` locals. Functions and data that `main` can't reach are not emitted.
 
 Not supported, with a `CompileError` rather than wrong code: floating point,
-64-bit integers (`long long`), bit-fields, variable-length arrays, K&R function
+bit-fields, variable-length arrays, K&R function
 definitions, inline assembly.
 
 ## Verification
 
 - `tests/test_assembler.py`: the spec example assembles to the exact machine
   code published in the 370 spec; error cases from section 3.3.
-- `tests/test_programs.py`: 26 programs in `tests/programs/`, each returning a
+- `tests/test_programs.py`: 29 programs in `tests/programs/`, each returning a
   checksum compared with what gcc -m32 computes (`// expect: N`, stamped by
   `tools/expect.py`).
 - `tests/test_coremark.py`: CoreMark validates and prints the published CRCs.
-- `tools/fuzz.py`: random programs (expression mode and statement mode over
-  arrays, structs and pointers) compared against gcc -m32. Running it with
+- `tools/fuzz.py`: random programs (expression mode, statement mode over
+  arrays, structs and pointers, and a 64-bit mode) compared against gcc -m32. Running it with
   `LC2KCC_TEMPS=123` or `12` shrinks the temporary-register pool to stress
   the spill logic.
 - Programs also run on the bundled `lc2k-assembler.exe` and `lc2k-sim.exe`,
@@ -151,7 +154,7 @@ src/lc2kcc/
   compiler.py   translation units, symbols, type building, global data, linking
   funcgen.py    per-function code generation (expressions, statements, calls)
   peephole.py   jump threading, dead code, redundant-load removal
-  runtime.py    hand-written runtime helpers; runtime/rt.c: division in C
+  runtime.py    hand-written runtime helpers; runtime/*.c: division, 64-bit, libc
   asmwriter.py  Program model; data-section ordering; tab layout
   labels.py     6-char label rules and C-name abbreviation
   isa.py        opcodes, encoding, field ranges

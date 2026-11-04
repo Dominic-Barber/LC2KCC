@@ -370,6 +370,42 @@ out_number(struct fmt_out *o, unsigned int value, unsigned int base, int upper, 
         }
 }
 
+static void
+out_number64(struct fmt_out *o, unsigned long long value, unsigned int base, int upper, int width, int left, char pad, char sign)
+{
+    char digits[24];
+    int  n = 0, total;
+    do
+    {
+        unsigned int d = (unsigned int)(value % base);
+        digits[n++]    = (char)(d < 10 ? '0' + d : (upper ? 'A' : 'a') + (d - 10));
+        value /= base;
+    } while (value != 0);
+    total = n + (sign != 0);
+    if (!left && pad == ' ')
+        while (width > total)
+        {
+            out_char(o, ' ');
+            width--;
+        }
+    if (sign != 0)
+        out_char(o, sign);
+    if (!left && pad == '0')
+        while (width > total)
+        {
+            out_char(o, '0');
+            width--;
+        }
+    while (n > 0)
+        out_char(o, digits[--n]);
+    if (left)
+        while (width > total)
+        {
+            out_char(o, ' ');
+            width--;
+        }
+}
+
 int
 vsnprintf(char *out, size_t cap, const char *fmt, va_list ap)
 {
@@ -380,7 +416,7 @@ vsnprintf(char *out, size_t cap, const char *fmt, va_list ap)
     while (*fmt != 0)
     {
         char c = *fmt++;
-        int  left = 0, width = 0;
+        int  left = 0, width = 0, longs;
         char pad = ' ';
         if (c != '%')
         {
@@ -398,10 +434,19 @@ vsnprintf(char *out, size_t cap, const char *fmt, va_list ap)
         }
         while (*fmt >= '0' && *fmt <= '9')
             width = width * 10 + (*fmt++ - '0');
+        longs = 0;
         while (*fmt == 'l' || *fmt == 'h')
-            fmt++;
+            longs += *fmt++ == 'l';
         c = *fmt++;
-        if (c == 'd' || c == 'i')
+        if (longs >= 2 && (c == 'd' || c == 'i' || c == 'u' || c == 'x' || c == 'X'))
+        {
+            unsigned long long v = va_arg(ap, unsigned long long);
+            if ((c == 'd' || c == 'i') && (long long)v < 0)
+                out_number64(&o, 0ull - v, 10, 0, width, left, pad, '-');
+            else
+                out_number64(&o, v, (c == 'x' || c == 'X') ? 16 : 10, c == 'X', width, left, pad, 0);
+        }
+        else if (c == 'd' || c == 'i')
         {
             int v = va_arg(ap, int);
             if (v < 0)
