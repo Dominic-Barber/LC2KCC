@@ -965,10 +965,8 @@ class FuncGen:
             ty = UINT
         elif val < 1 << 31:
             ty = INT
-        elif decimal:
-            raise CompileError("decimal constant too large for int", node)
         else:
-            ty = UINT
+            ty = UINT  # C would use long long for a decimal constant here; there is no 64-bit type
         return const_val(ty, val)
 
     def e_ID(self, node, discard):

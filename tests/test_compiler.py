@@ -37,6 +37,8 @@ class SemanticsTest(unittest.TestCase):
             "int main(void) { return (signed char)200; }": -56,
             "int main(void) { return (short)70000; }": 4464,
             "int main(void) { return 6 * 7; }": 42,
+            "int main(int argc, char **argv) { return argc + (argv == 0); }": 1,
+            "int main(void) { int x = -2147483648; return x == (-2147483647 - 1); }": 1,
         }
         for source, expected in cases.items():
             with self.subTest(source):
