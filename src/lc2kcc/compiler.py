@@ -481,6 +481,9 @@ class Compiler:
             comment = None
             if i == 0 and g.kind == "var":
                 comment = f"OUTPUT: {g.name}" if g.name in self.output_names else g.name
+            elif i == 0 and g.kind == "str":
+                text = "".join(chr(c) if 32 <= c < 127 else "." for c in g.words[:-1])
+                comment = '"' + (text if len(text) <= 28 else text[:25] + "...") + '"'
             lines.append(Line(".fill", (w,), lab, comment))
         return lines
 

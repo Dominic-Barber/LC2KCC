@@ -32,7 +32,23 @@ def compile_files(paths, include_dirs=(), defines=(), output_names=("ee_outbuf",
     for path in paths:
         comp.add_tu(parse_file(Path(path), include_dirs, defines), str(path))
     program = comp.build()
-    return program.render(), comp.mangler.symbol_map()
+    asm = program.render()
+    check_output(asm)
+    return asm, comp.mangler.symbol_map()
+
+
+def check_output(asm: str):
+    """The compiler's own output must pass the strict assembler and the layout lint."""
+    try:
+        assembler.assemble(asm)
+    except AsmError as error:
+        raise CompileError(
+            f"generated program is not valid LC-2K: {error} "
+            f"(lw/sw/beq offsets are 16-bit, so every label they name must be below address 32768)"
+        ) from None
+    problems = lint.check(asm)
+    if problems:
+        raise CompileError(f"generated program violates the layout conventions: {problems[0]}")
 
 
 def _cc(args):

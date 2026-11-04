@@ -120,6 +120,7 @@ class FuncGen:
         self.scope = Scope(scope)
         self.code: list[Ins] = []
         self.noemit = False
+        self.pending_comment = None
         self.owner = {r: None for r in TEMPS}
         self.live: list[Tmp] = []
         self.free_slots: list[int] = []
@@ -139,6 +140,8 @@ class FuncGen:
     def emit(self, op, a=0, b=0, c=0, comment=None):
         if self.noemit:
             raise NotConstant()
+        if comment is None and self.pending_comment is not None:
+            comment, self.pending_comment = self.pending_comment, None
         self.code.append(Ins(op, a, b, c, comment))
 
     def new_label(self):
@@ -1878,6 +1881,8 @@ class FuncGen:
     # ------------------------------------------------------------ statements
 
     def stmt(self, node):
+        if node.coord is not None and not isinstance(node, (c_ast.Compound, c_ast.Case, c_ast.Default, c_ast.Label, c_ast.EmptyStatement)):
+            self.pending_comment = f"{os.path.basename(node.coord.file)}:{node.coord.line}"
         m = getattr(self, "s_" + type(node).__name__, None)
         if m is not None:
             m(node)
