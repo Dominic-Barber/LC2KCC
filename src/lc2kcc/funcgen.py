@@ -1568,16 +1568,36 @@ class FuncGen:
                     a.bits = None if a.bits is None or a.bits + n > 31 else a.bits + n
                     return a
                 return self.helper_call_ty("Shl", [a, b], ty)
+            if n == 31:
+                return self.sign_bit(a, ty)
             name = "Shru" if (ty is UINT or (a.bits is not None and a.bits < 32)) else "Shrs"
-            res = self.helper_call_ty(name, [a, b], ty)
-            res.bits = None if a.bits is None else max(0, a.bits - n) or 1
+            res = self.helper_call_ty(name, [a, const_val(UINT, 1 << n)], ty)
+            res.bits = None if a.bits is None else max(1, a.bits - n)
             return res
         a = self.to_reg(a, keep=(b.tmp,) if b.tmp else ())
         b = self.to_reg(b, keep=(a.tmp,))
         if op == "<<":
             return self.helper_call_ty("Shl", [a, b], ty)
+        mask = self.helper_call_ty("Shl", [const_val(INT, 1), b], UINT)
         name = "Shru" if ty is UINT else "Shrs"
-        return self.helper_call_ty(name, [a, b], ty)
+        return self.helper_call_ty(name, [a, mask], ty)
+
+    def sign_bit(self, a, ty):
+        """a >> 31: 1 (logical) or -1 (arithmetic) if a < 0, else 0."""
+        a = self.to_reg(a)
+        r = self.reg_of(a.tmp)
+        neg, end = self.new_label(), self.new_label()
+        self.emit("lw", ZERO, AT, self.k(0x7FFFFFFF))
+        self.emit("nor", r, AT, r)  # r == 0 iff a < 0
+        self.emit("beq", r, ZERO, neg)
+        self.emit("add", ZERO, ZERO, r)
+        self.jmp(end)
+        self.place(neg)
+        self.load_const_reg(r, 1 if ty is UINT else -1)
+        self.place(end)
+        a.type = ty
+        a.bits = 1 if ty is UINT else None
+        return a
 
     # ------------------------------------------------------------ comparisons and conditions
 
