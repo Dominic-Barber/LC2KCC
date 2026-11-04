@@ -30,25 +30,43 @@ class Mangler:
 
     def __init__(self, reserved=()):
         self.used: set[str] = set(reserved)
-        self.names: dict[object, str] = {}
+        self.described: dict[str, str] = {}  # label -> what it names
         self.counter = 0
 
-    def global_label(self, key: object, cname: str, prefix: str = "") -> str:
-        """Capitalized label for a global; readable when the name fits."""
-        if key in self.names:
-            return self.names[key]
-        readable = prefix + cname if prefix else cname[:1].upper() + cname[1:]
-        label = readable if is_valid_label(readable) and readable not in self.used else None
-        while label is None:
-            candidate = "G" + base36(self.counter)
+    def _unique(self, prefix: str, desc: str) -> str:
+        while True:
+            suffix = base36(self.counter)
             self.counter += 1
-            if candidate not in self.used:
-                label = candidate
+            label = prefix[: max(1, 6 - len(suffix))] + suffix
+            if label not in self.used and is_valid_label(label):
+                self.used.add(label)
+                self.described[label] = desc
+                return label
+
+    def fresh(self, prefix: str, desc: str = "") -> str:
+        """A unique label: prefix plus a base-36 counter."""
+        return self._unique(prefix, desc)
+
+    def named(self, cname: str, desc: str, capital: bool, prefix: str = "") -> str:
+        """Readable label for a C entity; falls back to a counter suffix."""
+        stem = re.sub(r"[^A-Za-z0-9]", "", cname)
+        if not stem:
+            stem = "x"
+        if not stem[0].isalpha():
+            stem = "x" + stem
+        stem = stem[0].upper() + stem[1:] if capital else stem[0].lower() + stem[1:]
+        label = prefix + stem
+        if is_valid_label(label) and label not in self.used:
+            self.used.add(label)
+            self.described[label] = desc
+            return label
+        # abbreviate: keep a prefix of the name, then a counter
+        return self._unique((prefix + stem)[: 3 if len(prefix + stem) > 3 else len(prefix + stem)], desc)
+
+    def claim(self, label: str, desc: str = ""):
         self.used.add(label)
-        self.names[key] = label
-        return label
+        self.described[label] = desc
 
     def symbol_map(self) -> str:
         """Label-to-C-name map, written next to the .as for debugging."""
-        rows = sorted((label, " ".join(map(str, key)) if isinstance(key, tuple) else str(key)) for key, label in self.names.items())
-        return "".join(f"{label}\t{key}\n" for label, key in rows)
+        return "".join(f"{label}\t{desc}\n" for label, desc in sorted(self.described.items()) if desc)

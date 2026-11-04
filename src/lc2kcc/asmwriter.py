@@ -11,7 +11,7 @@ Layout follows programs/_LC2K_Format.txt (tab width 4):
 
 from dataclasses import dataclass, field
 
-from .labels import base36, is_valid_label
+from .labels import Mangler, is_valid_label
 
 TAB = 4
 OPCODE_COL = 8
@@ -49,6 +49,7 @@ def format_line(line: Line) -> str:
 
 @dataclass
 class Program:
+    mangler: Mangler = field(default_factory=Mangler)
     text: list[Line] = field(default_factory=list)
     func_ptrs: list[Line] = field(default_factory=list)
     io: list[Line] = field(default_factory=list)
@@ -65,8 +66,10 @@ class Program:
         if value not in self._consts:
             prefix, digits = ("k", str(value)) if value >= 0 else ("n", str(-value))
             label = prefix + digits
-            if not is_valid_label(label):
-                label = prefix + "x" + base36(len(self._consts))
+            if is_valid_label(label) and label not in self.mangler.used:
+                self.mangler.claim(label)
+            else:
+                label = self.mangler.fresh(prefix)
             self._consts[value] = label
         return self._consts[value]
 
