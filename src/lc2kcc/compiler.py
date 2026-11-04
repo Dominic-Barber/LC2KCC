@@ -427,6 +427,9 @@ class Compiler:
             if isinstance(ty, Array) and ty.count is not None and isinstance(g.type, Array) and g.type.count is None:
                 g.type = ty
         if not is_extern:
+            if not isinstance(ty, Array) or ty.count is not None or decl.init is not None:
+                if ty.is_void() or (ty.is_struct() and not ty.complete):
+                    raise CompileError(f"variable '{decl.name}' has incomplete type {ty}", decl)
             if decl.init is not None or not g.defined:
                 if g.defined and decl.init is not None and g.init is not None:
                     raise CompileError(f"redefinition of '{decl.name}'", decl)
@@ -515,7 +518,16 @@ class Compiler:
             path = Path(__file__).parent / "runtime" / f"{name}.c"
             self.add_tu(parse_file(path), "runtime" if name == "rt" else "runtime:libc")
 
-    def build(self, entry: str = "main") -> Program:
+    def need_everything(self):
+        """Compile all user code, reachable or not, so errors in dead code are reported too."""
+        for tu in self.tus:
+            if tu.name.startswith("runtime"):
+                continue
+            for g in list(tu.scope.names.values()):
+                if isinstance(g, GObj) and g.defined and (g.kind == "var" or g.fdef is not None):
+                    self.need(g)
+
+    def build(self, entry: str = "main", all_code: bool = False) -> Program:
         from .funcgen import FuncGen
         from .runtime import emit_helpers
 
@@ -524,6 +536,8 @@ class Compiler:
         if main is None or main.kind != "func" or main.fdef is None:
             raise CompileError(f"no {entry} function")
         self.need(main)
+        if all_code:
+            self.need_everything()
         main_ptr = self.addr_cell(main)
         p.emit("lw", 0, 5, "spinit", comment="initialize stack pointer")
         p.emit("lw", 0, 6, main_ptr, comment="load address of main")

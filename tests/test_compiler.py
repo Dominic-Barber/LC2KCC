@@ -138,6 +138,12 @@ class DiagnosticsTest(unittest.TestCase):
             "undefined function": "int f(void); int main(void) { return f(); }",
             "no main": "int f(void) { return 1; }",
             "non-constant initializer": "int f(void); int g = 1 + f(); int main(void) { return g; }",
+            "error in unreachable function": "static int dead(void) { return missing; } int main(void) { return 0; }",
+            "duplicate case": "int main(void) { switch (1) { case 1: case 1: return 0; } return 1; }",
+            "redeclaration": "int main(void) { int x = 1; int x = 2; return x; }",
+            "void variable": "int main(void) { void v; return 0; }",
+            "incomplete sizeof": "int main(void) { return sizeof(struct Nope); }",
+            "void value": "void f(void) {} int main(void) { return f(); }",
         }
         for name, source in cases.items():
             with self.subTest(name), self.assertRaises(CompileError):

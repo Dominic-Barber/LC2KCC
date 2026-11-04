@@ -25,15 +25,26 @@ SIM_EXE = ROOT / "lc2k-sim.exe"
 MEM_WORDS = 65536
 
 
-def compile_files(paths, include_dirs=(), defines=(), output_names=("ee_outbuf", "__stdout")) -> tuple[str, str]:
-    """(assembly text, label map) for a set of C files linked into one program."""
-    comp = Compiler(output_names=output_names)
-    comp.load_runtime()
-    for path in paths:
-        comp.add_tu(parse_file(Path(path), include_dirs, defines), str(path))
-    program = comp.build()
+def compile_files(paths, include_dirs=(), defines=(), output_names=("ee_outbuf", "__stdout"), check_all=True) -> tuple[str, str]:
+    """(assembly text, label map) for a set of C files linked into one program.
+
+    Only code reachable from main is emitted; with check_all the unreachable
+    code is compiled too (and discarded) so its errors are still reported.
+    """
+    asts = [(str(path), parse_file(Path(path), include_dirs, defines)) for path in paths]
+
+    def build(all_code):
+        comp = Compiler(output_names=output_names)
+        comp.load_runtime()
+        for name, ast in asts:
+            comp.add_tu(ast, name)
+        return comp, comp.build(all_code=all_code)
+
+    comp, program = build(False)
     asm = program.render()
     check_output(asm)
+    if check_all:
+        build(True)
     return asm, comp.mangler.symbol_map()
 
 

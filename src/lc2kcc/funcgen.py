@@ -927,7 +927,7 @@ class FuncGen:
     def rvalue(self, node):
         """Evaluate an expression to a Val (arrays and functions decayed)."""
         v = self.expr(node, False)
-        if v is None:
+        if v is None or v.type.is_void():
             raise CompileError("void value used in an expression", node)
         return v
 
@@ -1067,6 +1067,7 @@ class FuncGen:
                 ty = self.comp.build_type(node.expr, self.scope, self)
             else:
                 ty = self.static_type(node.expr)
+            self.require_complete(ty, node)
             return const_val(UINT, ty.size)
         if op == "&":
             a = self.addr_of_for_amp(node.expr)
@@ -1112,6 +1113,11 @@ class FuncGen:
         if isinstance(node, c_ast.UnaryOp) and node.op == "*":
             return self.rvalue(node.expr)
         return self.addr_of(node)
+
+    @staticmethod
+    def require_complete(ty, node):
+        if ty.is_void() or (ty.is_struct() and not ty.complete) or (ty.is_array() and ty.count is None):
+            raise CompileError(f"invalid use of incomplete type {ty}", node)
 
     def static_type(self, node):
         """C type of an expression without generating code (arrays not decayed)."""
@@ -2135,7 +2141,10 @@ class FuncGen:
         v = self.conv(v, cty.promote(v.type))
         values = []
         for expr, lab in cases:
-            values.append((self.eval_const_int(expr), lab))
+            value = self.eval_const_int(expr)
+            if any(cty.wrap(value, INT) == cty.wrap(other, INT) for other, _ in values):
+                raise CompileError(f"duplicate case value {value}", expr)
+            values.append((value, lab))
         if v.is_const:
             target = default or end
             for val, lab in values:
@@ -2194,6 +2203,8 @@ class FuncGen:
             self.comp.build_type(decl.type, self.scope, self)
             return
         ty = self.comp.build_type(decl.type, self.scope, self)
+        if decl.name in self.scope.names and "extern" not in decl.storage and not isinstance(ty, Func):
+            raise CompileError(f"redeclaration of '{decl.name}'", decl)
         if isinstance(ty, Func):
             g = self.comp.externs.get(decl.name)
             if g is None:
@@ -2219,6 +2230,7 @@ class FuncGen:
             if decl.init is None:
                 raise CompileError("array of unknown size", decl)
             ty = Array(ty.elem, self.init_count(ty, decl.init))
+        self.require_complete(ty, decl)
         size = max(1, ty.size) if (ty.is_array() or ty.is_struct()) else 1
         slot = self.local_top
         self.local_top += size
