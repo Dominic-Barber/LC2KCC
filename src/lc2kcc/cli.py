@@ -35,10 +35,6 @@ def compile_files(paths, include_dirs=(), defines=(), output_names=("ee_outbuf",
     return program.render(), comp.mangler.symbol_map()
 
 
-def compile_c(path: Path, include_dirs=(), defines=()) -> tuple[str, str]:
-    return compile_files([path], include_dirs, defines)
-
-
 def _cc(args):
     asm, symbol_map = compile_files(args.inputs, args.include, args.define)
     out = args.output or args.inputs[0].with_suffix(".as")

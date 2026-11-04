@@ -16,17 +16,17 @@ where FS is the frame size, known only after the body is generated.
 A call bumps r5 by FS, jumps, and restores r5 afterwards.
 """
 
+import os
 from dataclasses import dataclass
 
 from pycparser import c_ast
 
 from . import cty
 from .compiler import Addr, EnumConst, GObj, Local, Scope, TypedefSym
-from .cty import INT, UINT, Array, Func, Int, Ptr, Struct
+from .cty import INT, UINT, Array, Func, Ptr
 from .frontend import CompileError
 
 ZERO, SP, AT, RA = 0, 5, 6, 7
-import os
 
 # Expression temporaries. LC2KCC_TEMPS=123 shrinks the pool to stress-test spilling.
 TEMPS = tuple(int(c) for c in os.environ.get("LC2KCC_TEMPS", "1234"))
@@ -117,7 +117,6 @@ class FuncGen:
         self.comp = comp
         self.p = comp.program
         self.gobj = gobj
-        self.root_scope = scope
         self.scope = Scope(scope)
         self.code: list[Ins] = []
         self.noemit = False
@@ -131,12 +130,9 @@ class FuncGen:
         self.break_stack: list[str] = []
         self.continue_stack: list[str] = []
         self.user_labels: dict[str, str] = {}
-        self.alias: dict[str, str] = {}
-        self.pending_labels: list[str] = []
         self.ret_label = None
         self.ret_type = cty.INT
         self.variadic = False
-        self.nparams = 0
 
     # ------------------------------------------------------------ emission
 
@@ -402,10 +398,8 @@ class FuncGen:
             if v.is_const and not frm.is_struct():
                 return const_val(to, v.off)
             r = v.copy(type=to)
-            if to.is_int():
-                r.bits = v.bits if (v.bits is not None and v.tmp is not None) else None
-                if not to.is_ptr() and (v.sym is not None or v.sp):
-                    pass
+            if to.is_int() and v.tmp is None:
+                r.bits = None  # a symbol or frame address has no known range
             return r
         if to.is_int():
             # to is narrower than 32 bits (32-bit targets returned above)
@@ -649,24 +643,6 @@ class FuncGen:
             raise CompileError("expression is not an integer constant", node)
         return v.off
 
-    def eval_static(self, node):
-        """Value of a static initializer: int, or Addr."""
-        prev_noemit = self.noemit
-        self.noemit = True
-        try:
-            v = self.rvalue(node)
-        except NotConstant:
-            raise CompileError("initializer is not a compile-time constant", node) from None
-        finally:
-            self.noemit = prev_noemit
-        if v.tmp is not None or v.sp:
-            raise CompileError("initializer is not a compile-time constant", node)
-        if v.sym is not None:
-            if v.sym.kind == "var" or v.sym.kind == "str":
-                return Addr(v.sym, v.off)
-            return Addr(v.sym, 0)
-        return v.off
-
     # ------------------------------------------------------------ static initializers
 
     def init_count(self, ty, init):
@@ -773,7 +749,7 @@ class FuncGen:
             raise CompileError("initializer is not a compile-time constant", init)
         if v.sym is not None:
             return Addr(v.sym, v.off)
-        return s32(v.off) if not ty.is_ptr() else s32(v.off)
+        return s32(v.off)
 
     # ------------------------------------------------------------ symbols
 
@@ -782,9 +758,6 @@ class FuncGen:
         if sym is None:
             raise CompileError(f"undeclared identifier '{name}'", node)
         return sym
-
-    def declare_typedef_or_type(self, node, scope=None):
-        return self.comp.build_type(node, scope or self.scope, self)
 
     # ------------------------------------------------------------ expressions: lvalues
 
@@ -2242,7 +2215,6 @@ class FuncGen:
                 params.append(p)
         if len(params) == 1 and params[0].name is None:
             params = []
-        self.nparams = len(params)
         slot = 1
         if self.ret_type.is_struct():
             slot += 1  # hidden pointer to the caller's result area at slot 1

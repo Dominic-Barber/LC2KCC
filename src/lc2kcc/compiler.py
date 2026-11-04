@@ -11,7 +11,7 @@ from pycparser import c_ast
 
 from . import cty
 from .asmwriter import Line, Program
-from .cty import Array, Func, Int, Ptr, Struct
+from .cty import Array, Func, Ptr, Struct
 from .frontend import CompileError
 from .labels import Mangler
 
@@ -440,13 +440,6 @@ class Compiler:
                         g.type = ty if not (isinstance(g.type, Array) and g.type.count is not None) else g.type
         return g
 
-    def new_static_local(self, fg_name: str, decl, ty, tu: TU) -> GObj:
-        g = GObj(f"{fg_name}.{decl.name}" if False else decl.name, ty, "var", static=True, tu=tu, coord=decl.coord)
-        g.defined = True
-        g.init = decl.init
-        g.func_scope = fg_name
-        return g
-
     # ------------------------------------------------------------ data layout
 
     def resolve_data(self, g: GObj):
@@ -468,14 +461,6 @@ class Compiler:
         if g.init is not None:
             fg.fill_init(words, 0, ty, g.init)
         g.words = words
-
-    def finalize_data(self):
-        """Resolve every needed data object (may discover more), then emit lines."""
-        i = 0
-        while i < len(self.datalist):
-            self.resolve_data(self.datalist[i])
-            i += 1
-        # strings referenced only through addresses are in datalist via need()
 
     def data_lines(self, g: GObj):
         label = self.label_of(g)
