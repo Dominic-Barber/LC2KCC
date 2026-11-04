@@ -26,7 +26,10 @@ from .cty import INT, UINT, Array, Func, Int, Ptr, Struct
 from .frontend import CompileError
 
 ZERO, SP, AT, RA = 0, 5, 6, 7
-TEMPS = (1, 2, 3, 4)
+import os
+
+# Expression temporaries. LC2KCC_TEMPS=123 shrinks the pool to stress-test spilling.
+TEMPS = tuple(int(c) for c in os.environ.get("LC2KCC_TEMPS", "1234"))
 VARARG_SLOTS = 12
 
 

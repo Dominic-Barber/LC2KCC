@@ -114,10 +114,96 @@ class Gen:
         return "\n".join(out) + "\n"
 
 
+class Gen2(Gen):
+    """Statement-level programs over arrays, structs and pointers."""
+
+    def idx(self, n):
+        return f"(({self.expr(2)}) & {n - 1})"
+
+    def lval(self):
+        r = self.r
+        k = r.random()
+        if k < 0.2:
+            return f"recs[{self.idx(4)}].a"
+        if k < 0.3:
+            return f"recs[{self.idx(4)}].b"
+        if k < 0.4:
+            return f"recs[{self.idx(4)}].c"
+        if k < 0.5:
+            return f"recs[{self.idx(4)}].arr[{self.idx(4)}]"
+        if k < 0.6:
+            return f"garr[{self.idx(16)}]"
+        if k < 0.7:
+            return f"gc[{self.idx(16)}]"
+        if k < 0.75:
+            return "*pp"
+        if k < 0.8:
+            return "pp[1]"
+        return self.pick_var()[0]
+
+    def stmt(self, depth):
+        r = self.r
+        k = r.random()
+        e = lambda d=2: self.expr(d)
+        if depth <= 0 or k < 0.35:
+            op = r.choice(["=", "=", "+=", "-=", "^=", "|=", "&="])
+            return f"{self.lval()} {op} {e()};"
+        if k < 0.42:
+            return f"pp = garr + {self.idx(8)}; *pp++ = {e()}; pp[1] = *pp + {e(1)};"
+        if k < 0.48:
+            return f"rp = &recs[{self.idx(4)}]; rp->arr[{self.idx(4)}] = rp->a + {e(1)}; rp->b += {e(1)};"
+        if k < 0.53:
+            return f"recs[{self.idx(4)}] = recs[{self.idx(4)}];"
+        if k < 0.6:
+            return f"mix(fn(&recs[{self.idx(4)}], {e(1)}));"
+        if k < 0.67:
+            return f"if ({e()}) {{ {self.stmt(depth - 1)} }} else {{ {self.stmt(depth - 1)} }}"
+        if k < 0.75:
+            n = r.randint(1, 5)
+            v = f"i{depth}"
+            return f"for ({v} = 0; {v} < {n}; {v}++) {{ {self.stmt(depth - 1)} if ({e(1)}) continue; {self.stmt(depth - 1)} if ({e(1)} == 3) break; }}"
+        if k < 0.82:
+            v = f"i{depth}"
+            return f"{v} = {r.randint(0, 3)}; while ({v} < 5) {{ {self.stmt(depth - 1)} {v} += {r.randint(1, 3)}; }}"
+        if k < 0.9:
+            return (
+                f"switch ({self.idx(4)}) {{ case 0: {self.stmt(depth - 1)} break; case 1: {self.stmt(depth - 1)} "
+                f"case 2: {self.stmt(depth - 1)} break; default: {self.stmt(depth - 1)} }}"
+            )
+        if k < 0.95:
+            return f"do {{ {self.stmt(depth - 1)} }} while (0);"
+        return f"mix({e(3)});"
+
+    def program(self):
+        r = self.r
+        out = [
+            "struct R { int a; short b; unsigned char c; int arr[4]; };",
+            "struct R recs[4]; int garr[16]; char gc[16];",
+            "static int mixh = 0; static void mix(int v) { mixh = mixh * 33 + v; }",
+            "int f0(int a, int b, int c) { return a * 3 + (b ^ c); }",
+            "unsigned f1(unsigned a, unsigned b, unsigned c) { return (a >> 3) + b * 5 - c; }",
+            "int f2(int a, int b, int c) { int t = a < b ? a : b; return t + f0(c, a, b); }",
+            "int fn(struct R *p, int x) { p->a += x; return p->a + p->arr[x & 3] + p->c; }",
+            "int main(void) {",
+            "  int i0 = 0, i1 = 0, i2 = 0, i3 = 0, k; int *pp = garr; struct R *rp = recs;",
+        ]
+        for i in range(r.randint(2, 4)):
+            out.append(f"  int v{i} = {self.expr(1)};")
+            self.vars.append((f"v{i}", "int"))
+        out.append("  for (k = 0; k < 16; k++) { garr[k] = k * 7 - 20; gc[k] = k * 3; recs[k & 3].arr[k & 3] = k; recs[k & 3].a = k * 11; recs[k & 3].b = k; recs[k & 3].c = k * 5; }")
+        for _ in range(r.randint(6, 12)):
+            out.append("  " + self.stmt(3))
+            out.append(f"  mix({self.pick_var()[0]});")
+        out.append("  for (k = 0; k < 16; k++) mix(garr[k] + gc[k] + recs[k & 3].a + recs[k & 3].b + recs[k & 3].c + recs[k & 3].arr[k & 3]);")
+        out.append("  return mixh;")
+        out.append("}")
+        return "\n".join(out) + "\n"
+
+
 def run_one(args):
-    seed, keep = args
+    seed, keep, mode = args
     rng = random.Random(seed)
-    src = Gen(rng).program()
+    src = (Gen2 if mode == 'stmt' else Gen)(rng).program()
     d = tempfile.mkdtemp(prefix="fz")
     c = os.path.join(d, "t.c")
     Path(c).write_text(src)
@@ -148,10 +234,11 @@ def main():
     ap.add_argument("-n", type=int, default=200)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--keep", action="store_true")
+    ap.add_argument("--mode", choices=["expr", "stmt"], default="expr")
     args = ap.parse_args()
     bad = 0
     with ProcessPoolExecutor() as ex:
-        for seed, status, msg, d in ex.map(run_one, [(s, args.keep) for s in range(args.seed, args.seed + args.n)]):
+        for seed, status, msg, d in ex.map(run_one, [(s, args.keep, args.mode) for s in range(args.seed, args.seed + args.n)]):
             if status != "ok":
                 bad += 1
                 print(f"seed {seed}: {status}: {msg}  ({d}/t.c)")
