@@ -1,4 +1,4 @@
-"""Reference LC-2K simulator (EECS 370 spec semantics)."""
+"""Reference LC-2K simulator (strict spec semantics)."""
 
 from dataclasses import dataclass
 

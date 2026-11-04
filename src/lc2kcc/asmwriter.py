@@ -1,6 +1,6 @@
 """In-memory assembly program and its rendering to a .as file.
 
-Layout follows programs/_LC2K_Format.txt (tab width 4):
+Layout follows the LC-2K assembly conventions (tab width 4):
   - opcode at column 8 (the 3rd tab stop), operands separated by one space
   - comments at column 24 (the 7th tab stop)
   - no trailing whitespace, exactly one newline at end of file

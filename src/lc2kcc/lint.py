@@ -1,4 +1,4 @@
-"""Check a .as file against the layout rules in programs/_LC2K_Format.txt.
+"""Check a .as file against the LC-2K layout conventions.
 
 Checked: tab layout and trailing whitespace, label shape (at most 6 letters
 and digits, starting with a letter), all instructions before any .fill, the

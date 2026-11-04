@@ -1,7 +1,7 @@
 """Label rules and C-name mangling.
 
 Assembler rule: at most 6 characters, letters and digits only, starting
-with a letter. Project convention (programs/_LC2K_Format.txt): global
+with a letter. Layout convention: global
 labels (functions, the stack, non-static data) start with a capital
 letter; everything else starts lowercase.
 """

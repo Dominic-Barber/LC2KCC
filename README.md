@@ -1,6 +1,6 @@
 # lc2kcc
 
-A C compiler for the **EECS 370 LC-2K ISA** (8 opcodes, 8 registers, 16-bit
+A C compiler for the **LC-2K ISA** (8 opcodes, 8 registers, 16-bit
 offsets, 65,536 words of memory). It is written in Python with
 [pycparser](https://github.com/eliben/pycparser) and compiles
 [CoreMark](third_party/coremark), unmodified, to a 9,851-word program that
@@ -29,8 +29,8 @@ PYTHONPATH=src python3 -m lc2kcc --help
 | Command | What it does |
 |---|---|
 | `lc2kcc cc a.c b.c -o out.as` | compile and link C files to LC-2K assembly, plus `out.map` (label -> C name) |
-| `lc2kcc as foo.as -o foo.mc` | assemble with the strict 370 assembler (one 8-digit hex word per line) |
-| `lc2kcc sim foo.mc` | simulate with the strict 370 simulator |
+| `lc2kcc as foo.as -o foo.mc` | assemble with the strict-spec assembler (one 8-digit hex word per line) |
+| `lc2kcc sim foo.mc` | simulate with the strict-spec simulator |
 | `lc2kcc run a.c b.c [--fast] [--dump NAME]` | compile, assemble, run, print `Result` (and a C string global); `--fast` uses `lc2k-sim.exe` |
 | `lc2kcc lint foo.as` | check the layout conventions |
 
@@ -96,7 +96,7 @@ a `printf` family that writes to the `__stdout` buffer), all compiled with the
 program. The shift and
 multiply loops are bit-serial.
 
-**Output layout** (follows `../programs/_LC2K_Format.txt`, checked by
+**Output layout** (the LC-2K layout conventions, checked by
 `lint`): code first, then function-pointer cells, `Result`
 (`OUTPUT: main's return value`), constants (positive ascending, then negative
 descending), other single data, arrays (the CoreMark `ee_outbuf` is marked
@@ -127,7 +127,7 @@ definitions, inline assembly.
 ## Verification
 
 - `tests/test_assembler.py`: the spec example assembles to the exact machine
-  code published in the 370 spec; error cases from section 3.3.
+  code published with the ISA spec; the spec's required assembler error cases.
 - `tests/test_programs.py`: 29 programs in `tests/programs/`, each returning a
   checksum compared with what gcc -m32 computes (`// expect: N`, stamped by
   `tools/expect.py`).
@@ -137,7 +137,7 @@ definitions, inline assembly.
   `LC2KCC_TEMPS=123` or `12` shrinks the temporary-register pool to stress
   the spill logic.
 - Programs also run on the bundled `lc2k-assembler.exe` and `lc2k-sim.exe`,
-  which implement the extended 470 encoding of the same assembly language,
+  which implement an extended encoding of the same assembly language,
   as an independent check (`lc2kcc run --fast`).
 
 CoreMark, one iteration (`ITERATIONS=1`): 9,851 words, about 3.9 million
@@ -158,8 +158,8 @@ src/lc2kcc/
   asmwriter.py  Program model; data-section ordering; tab layout
   labels.py     6-char label rules and C-name abbreviation
   isa.py        opcodes, encoding, field ranges
-  assembler.py  strict 370-spec assembler (b/jump, range checks)
-  simulator.py  strict 370 reference simulator
+  assembler.py  strict-spec assembler (b/jump, range checks)
+  simulator.py  strict-spec reference simulator
   lint.py       layout-convention checker
   cli.py        command line
   include/      freestanding headers (stddef.h, stdint.h, limits.h, stdarg.h)
@@ -170,7 +170,7 @@ tests/          unittest suites and the gcc-checked program corpus
 tools/          fuzz.py, expect.py, profile.py
 ```
 
-The repo's `lc2k-assembler.exe` and `lc2k-sim.exe` target the extended 470 ISA
+The repo's `lc2k-assembler.exe` and `lc2k-sim.exe` target an extended ISA
 (16 registers, `addi`/`nand`, 20-bit offsets, a different encoding).
-`assembler.py` and `simulator.py` implement the strict 370 spec instead, so
+`assembler.py` and `simulator.py` implement the strict spec instead, so
 nothing that only the extended ISA allows can slip through.

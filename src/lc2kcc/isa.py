@@ -1,4 +1,4 @@
-"""LC-2K instruction set (EECS 370 spec): opcodes, field limits, encoding."""
+"""LC-2K instruction set (strict spec): opcodes, field limits, encoding."""
 
 NUM_REGS = 8
 MEM_WORDS = 65536

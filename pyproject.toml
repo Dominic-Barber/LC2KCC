@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lc2kcc"
 version = "0.1.0"
-description = "C compiler targeting the EECS 370 LC-2K ISA"
+description = "C compiler targeting the LC-2K ISA"
 requires-python = ">=3.11"
 dependencies = ["pycparser>=2.21"]
 

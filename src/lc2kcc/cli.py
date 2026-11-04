@@ -89,9 +89,9 @@ ASM_EXE = ROOT / "lc2k-assembler.exe"
 def run_exe(asm: str) -> tuple[list[int], int]:
     """Assemble and run on the bundled tools; returns (final memory, instruction count).
 
-    lc2k-assembler.exe / lc2k-sim.exe implement the extended 470 encoding
+    lc2k-assembler.exe / lc2k-sim.exe implement an extended encoding
     (16 registers, 4-bit opcodes) of the same assembly language, so they are
-    a fast independent check of the program, not of the strict 370 encoding.
+    a fast independent check of the program, not of the strict encoding.
     """
     with tempfile.TemporaryDirectory() as tmp:
         src = Path(tmp) / "prog.as"
@@ -123,7 +123,7 @@ def read_cstring(mem, addr, limit=4096):
 
 def execute(asm: str, fast: bool, max_steps: int):
     """Assemble and run; returns (assembled, memory, steps)."""
-    assembled = assembler.assemble(asm)  # strict 370 assembler always validates
+    assembled = assembler.assemble(asm)  # strict-spec assembler always validates
     if fast:
         mem, steps = run_exe(asm)
     else:

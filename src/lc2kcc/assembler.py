@@ -1,4 +1,4 @@
-"""Strict two-pass assembler for the EECS 370 LC-2K spec.
+"""Strict two-pass assembler for the LC-2K spec.
 
 Stricter than the bundled programs/lc2k-assembler.exe, which targets the
 repo's extended ISA: this one allows only 8 registers and 16-bit offsets,
