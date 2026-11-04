@@ -1,7 +1,9 @@
 """Check a .as file against the layout rules in programs/_LC2K_Format.txt.
 
-Only layout is checked here. Syntax and semantics are the assembler's job,
-and data-section ordering is guaranteed by asmwriter.Program.
+Checked: tab layout and trailing whitespace, label shape (at most 6 letters
+and digits, starting with a letter), all instructions before any .fill, the
+constants (positive ascending, then negative descending), and Stack as the
+last line. Syntax and semantics are the assembler's job.
 """
 
 import re
@@ -35,4 +37,35 @@ def check(text: str) -> list[str]:
             got = _col(before + match["mid"])
             if got != expected:
                 problems.append(f"line {lineno}: comment at column {got}, expected {expected}")
+    problems += _check_structure(text)
+    return problems
+
+
+_CONST = re.compile(r"[kn]\d+")
+
+
+def _check_structure(text: str) -> list[str]:
+    problems = []
+    lines = text.rstrip("\n").split("\n")
+    in_data = False
+    consts = []
+    for lineno, line in enumerate(lines, 1):
+        match = _LINE.fullmatch(line.rstrip())
+        if match is None:
+            continue
+        label, instr = match["label"], match["instr"].split()
+        if label and not (len(label) <= 6 and label.isalnum() and label[0].isalpha()):
+            problems.append(f"line {lineno}: invalid label {label!r}")
+        if instr[0] == ".fill":
+            in_data = True
+            if _CONST.fullmatch(label) and len(instr) == 2:
+                consts.append((lineno, int(instr[1])))
+        elif in_data:
+            problems.append(f"line {lineno}: instruction after a .fill (instructions must come first)")
+    positive = [v for _, v in consts if v >= 0]
+    negative = [v for _, v in consts if v < 0]
+    if positive != sorted(positive) or negative != sorted(negative, reverse=True) or [v for _, v in consts] != positive + negative:
+        problems.append("constants must be positive ascending, then negative descending")
+    if lines and not lines[-1].startswith("Stack\t"):
+        problems.append("the last line must be the Stack label")
     return problems

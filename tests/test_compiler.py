@@ -202,5 +202,29 @@ class OutputFormatTest(unittest.TestCase):
                 self.assertNotEqual(parts[2], "0", line)
 
 
+class LintTest(unittest.TestCase):
+    GOOD = "\t\thalt\nk1\t\t.fill 1\nk2\t\t.fill 2\nn1\t\t.fill -1\nn2\t\t.fill -2\nStack\t.fill 0\t\t\tstack grows upward from here\n"
+
+    def test_accepts_conforming_layout(self):
+        self.assertEqual(lint.check(self.GOOD), [])
+
+    def test_flags_bad_layout(self):
+        bad = {
+            "opcode column": self.GOOD.replace("\t\thalt", "\thalt"),
+            "trailing whitespace": self.GOOD.replace("halt", "halt "),
+            "final newline": self.GOOD.rstrip("\n"),
+            "operand spacing": self.GOOD.replace("halt", "lw  0 1 k1"),
+            "comment column": self.GOOD.replace("\t\t\tstack grows", "\t\tstack grows"),
+            "instruction after .fill": self.GOOD.replace("k1\t\t.fill 1\n", "k1\t\t.fill 1\n\t\tnoop\n"),
+            "constant order": self.GOOD.replace("k1\t\t.fill 1\nk2\t\t.fill 2", "k2\t\t.fill 2\nk1\t\t.fill 1"),
+            "negative order": self.GOOD.replace("n1\t\t.fill -1\nn2\t\t.fill -2", "n2\t\t.fill -2\nn1\t\t.fill -1"),
+            "label too long": self.GOOD.replace("k1\t", "toolong1\t"),
+            "stack last": self.GOOD + "extra\t.fill 0\n",
+        }
+        for name, text in bad.items():
+            with self.subTest(name):
+                self.assertTrue(lint.check(text), name)
+
+
 if __name__ == "__main__":
     unittest.main()
