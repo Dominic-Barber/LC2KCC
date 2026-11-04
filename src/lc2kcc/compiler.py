@@ -184,6 +184,10 @@ class Compiler:
             self.cells[key] = cell
         return self.cells[key]
 
+    def immutable_labels(self) -> set:
+        """Labels of words the program never writes: constants and address cells."""
+        return set(self.program._consts.values()) | set(self.cells.values())
+
     def need(self, g: GObj):
         if g.needed:
             return

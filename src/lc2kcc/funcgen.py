@@ -2281,7 +2281,7 @@ class FuncGen:
         from .asmwriter import Line
         from .peephole import optimize
 
-        code = optimize(code)
+        code = optimize(code, self.comp.immutable_labels())
         spill_base = self.local_max
 
         def resolve(x):

@@ -25,10 +25,18 @@ def main():
     steps = 0
     decode = isa.decode
     s32 = isa.to_signed32
+    helpers = {assembled.symbols[n]: n for n in ("Mul", "Shl", "Shru", "Shrs", "Lts", "Ltu") if n in assembled.symbols}
+    hcost, hcalls = {}, {}
+    cur = None
     while True:
         op, a, b, d, off = decode(mem[pc])
         counts[pc] += 1
         steps += 1
+        if pc in helpers:
+            cur = helpers[pc]
+            hcalls[cur] = hcalls.get(cur, 0) + 1
+        if cur:
+            hcost[cur] = hcost.get(cur, 0) + 1
         npc = pc + 1
         if op == "add":
             regs[d] = s32(regs[a] + regs[b])
@@ -42,6 +50,8 @@ def main():
             if regs[a] == regs[b]:
                 npc = pc + 1 + off
         elif op == "jalr":
+            if a == 4 and b == 6:
+                cur = None
             t = regs[a]
             regs[b] = pc + 1
             npc = t
@@ -67,6 +77,8 @@ def main():
             li += 1
         per[cur] = per.get(cur, 0) + counts[addr]
     print(f"total {steps} instructions")
+    for name, n in sorted(hcost.items(), key=lambda kv: -kv[1]):
+        print(f"helper {name}: {hcalls[name]} calls, {n} instructions ({n / hcalls[name]:.1f} per call)")
     for name, n in sorted(per.items(), key=lambda kv: -kv[1])[:25]:
         print(f"{n:10d} {100 * n / steps:5.1f}%  {name:8s} {names.get(name, '')}")
 
