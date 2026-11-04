@@ -107,6 +107,8 @@ def s32(v: int) -> int:
 
 def int_range_bits(ty):
     """Number of value bits if the type is unsigned and narrower than 32, else None."""
+    if ty is cty.BOOL:
+        return 1
     if ty.is_int() and not ty.signed and ty.size < 4:
         return ty.size * 8
     return None
@@ -397,6 +399,15 @@ class FuncGen:
             return Val(to)
         if frm is to:
             return v
+        if to is cty.BOOL:
+            # conversion to _Bool is "!= 0", not truncation
+            if v.is_const:
+                return const_val(to, 1 if v.off & 0xFFFFFFFF else 0)
+            if v.tmp is None:
+                return const_val(to, 1)  # the address of an object is never null
+            r = self.compare_value("!=", v, const_val(INT, 0), None)
+            r.type = to
+            return r
         if to.is_ptr() or (to.is_int() and to.size == 4):
             if v.is_const and not frm.is_struct():
                 return const_val(to, v.off)

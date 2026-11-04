@@ -46,7 +46,7 @@ class GObj:
     aux: dict = field(default_factory=dict)  # word offset -> label
     needed: bool = False
     coord: object = None
-    func_scope: str | None = None  # owning function, for static locals
+    weak: bool = False  # library definition that a program may replace
 
     @property
     def size(self):
@@ -127,7 +127,7 @@ def parse_int_name(names: list[str], node) -> cty.Type:
 
 
 class Compiler:
-    def __init__(self, output_names=("ee_outbuf",)):
+    def __init__(self, output_names=("ee_outbuf", "__stdout")):
         self.mangler = Mangler(reserved=RESERVED)
         self.program = Program(mangler=self.mangler)
         self.externs: dict[str, GObj] = {}
@@ -396,8 +396,9 @@ class Compiler:
         elif fdef is not None or g.type.params is None:
             g.type = ty
         if fdef is not None:
-            if g.fdef is not None:
+            if g.fdef is not None and not g.weak:
                 raise CompileError(f"redefinition of function '{decl.name}'", decl)
+            g.weak = tu.name == "runtime:libc" and not static
             g.fdef = fdef
             g.tu = tu
             g.defined = True
@@ -510,8 +511,9 @@ class Compiler:
 
         from .frontend import parse_file
 
-        path = Path(__file__).parent / "runtime" / "rt.c"
-        self.add_tu(parse_file(path), "runtime")
+        for name in ("rt", "libc"):
+            path = Path(__file__).parent / "runtime" / f"{name}.c"
+            self.add_tu(parse_file(path), "runtime" if name == "rt" else "runtime:libc")
 
     def build(self, entry: str = "main") -> Program:
         from .funcgen import FuncGen

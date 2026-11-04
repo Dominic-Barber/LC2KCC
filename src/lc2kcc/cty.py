@@ -58,7 +58,7 @@ SHORT = Int("short", 2, True)
 USHORT = Int("unsigned short", 2, False)
 INT = Int("int", 4, True)
 UINT = Int("unsigned int", 4, False)
-BOOL = UCHAR
+BOOL = Int("_Bool", 1, False)
 
 
 @dataclass(eq=False)

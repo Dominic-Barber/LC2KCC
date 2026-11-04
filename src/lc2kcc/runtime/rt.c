@@ -1,11 +1,9 @@
 /*
  * lc2kcc runtime library, compiled with the user's program (only the
  * functions the program reaches are emitted). The code generator calls
- * these for `/`, `%` and large struct copies. It must not use `/` or `%`
+ * these for `/` and `%`. It must not use `/` or `%`
  * itself.
  */
-
-typedef unsigned int __size_t;
 
 /* Restoring division, one quotient bit per iteration, MSB first. */
 static unsigned int
@@ -68,17 +66,4 @@ __smod(int n, int d)
     unsigned int r;
     __udivmod(un, ud, &r);
     return n < 0 ? (int)(0u - r) : (int)r;
-}
-
-/* Word-at-a-time copy: every addressable word of an object is one "byte". */
-void
-__memcpy(char *dst, char *src, __size_t n)
-{
-    while (n != 0)
-    {
-        *dst = *src;
-        dst++;
-        src++;
-        n--;
-    }
 }

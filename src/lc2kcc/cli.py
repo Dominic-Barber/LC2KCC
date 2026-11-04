@@ -25,7 +25,7 @@ SIM_EXE = ROOT / "lc2k-sim.exe"
 MEM_WORDS = 65536
 
 
-def compile_files(paths, include_dirs=(), defines=(), output_names=("ee_outbuf",)) -> tuple[str, str]:
+def compile_files(paths, include_dirs=(), defines=(), output_names=("ee_outbuf", "__stdout")) -> tuple[str, str]:
     """(assembly text, label map) for a set of C files linked into one program."""
     comp = Compiler(output_names=output_names)
     comp.load_runtime()
@@ -126,19 +126,25 @@ def _run(args):
     assembled, mem, steps = execute(asm, args.fast, args.max_steps)
     print(f"halted after {steps} instructions; image {len(assembled.words)} words")
     print(f"Result = {mem[assembled.symbols['Result']]}")
+    stdout = _find_label(symbol_map, "__stdout", required=False)
+    if stdout is not None:
+        print("--- stdout ---")
+        print(read_cstring(mem, assembled.symbols[stdout]), end="")
     for name in args.dump:
         label = _find_label(symbol_map, name)
         print(f"--- {name} ---")
         print(read_cstring(mem, assembled.symbols[label]), end="")
 
 
-def _find_label(symbol_map: str, cname: str) -> str:
+def _find_label(symbol_map: str, cname: str, required: bool = True):
     """Label of the C global `cname`, from the compiler's label map."""
     for line in symbol_map.splitlines():
         label, _, desc = line.partition("\t")
         if desc in (cname, f"static {cname}"):
             return label
-    raise SystemExit(f"lc2kcc: no global named {cname}")
+    if required:
+        raise SystemExit(f"lc2kcc: no global named {cname}")
+    return None
 
 
 def _lint(args):

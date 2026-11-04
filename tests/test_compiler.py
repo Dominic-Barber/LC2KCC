@@ -5,6 +5,8 @@ from lc2kcc.assembler import assemble
 from lc2kcc.cli import compile_files
 from lc2kcc.frontend import CompileError
 
+from lc2kcc.cli import read_cstring
+
 from support import ROOT, result_of, run_files, run_source
 
 
@@ -76,6 +78,51 @@ class SemanticsTest(unittest.TestCase):
         int sum(int n, ...) { va_list ap; int s = 0; va_start(ap, n); while (n--) s += va_arg(ap, int); va_end(ap); return s; }
         int main(void) { return sum(4, 10, 20, 30, 40); }"""
         self.assertEqual(result_of(source), 100)
+
+
+class LibraryTest(unittest.TestCase):
+    def test_printf_and_string_library(self):
+        source = r"""
+        #include <stdio.h>
+        #include <string.h>
+        #include <stdlib.h>
+        #include <ctype.h>
+        static int cmp(const void *a, const void *b) { return *(const int *)a - *(const int *)b; }
+        int main(void) {
+            int v[6] = { 5, 3, 9, -1, 7, 2 };
+            char buf[40];
+            int i;
+            qsort(v, 6, sizeof v[0], cmp);
+            for (i = 0; i < 6; i++) printf("%d,", v[i]);
+            sprintf(buf, "%s|%05d|%x|%c|%-3d|%3d|", "ab", 42, 255, 'z', 7, -8);
+            puts(buf);
+            printf("%u %d%%\n", 4000000000u, (int)strlen(buf));
+            return atoi("-12") + toupper('a');
+        }"""
+        result, _, asm, assembled, mem = run_source(source)
+        self.assertEqual(result, -12 + 65)
+        out = read_cstring(mem, assembled.symbols["Stdout"])
+        self.assertEqual(out, "-1,2,3,5,7,9,ab|00042|ff|z|7  | -8|\n4000000000 22%\n")
+
+    def test_program_may_replace_a_library_function(self):
+        source = """
+        #include <string.h>
+        size_t strlen(const char *s) { return 99; }
+        int main(void) { return (int)strlen("abc"); }"""
+        self.assertEqual(result_of(source), 99)
+
+
+class LinkTest(unittest.TestCase):
+    def test_multiple_translation_units(self):
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as d:
+            a, b = Path(d, "a.c"), Path(d, "b.c")
+            a.write_text("int shared = 5; static int hidden = 1; int bump(int);\nint main(void) { return bump(10) + hidden + shared; }\n")
+            b.write_text("extern int shared; static int hidden = 100; int bump(int x) { return x + hidden + shared++; }\n")
+            result, _, _, _, _ = run_files([a, b])
+        self.assertEqual(result, 10 + 100 + 5 + 1 + 6)
 
 
 class DiagnosticsTest(unittest.TestCase):
