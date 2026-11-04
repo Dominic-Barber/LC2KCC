@@ -48,20 +48,24 @@ class Mangler:
         return self._unique(prefix, desc)
 
     def named(self, cname: str, desc: str, capital: bool, prefix: str = "") -> str:
-        """Readable label for a C entity; falls back to a counter suffix."""
-        stem = re.sub(r"[^A-Za-z0-9]", "", cname)
-        if not stem:
-            stem = "x"
-        if not stem[0].isalpha():
-            stem = "x" + stem
-        stem = stem[0].upper() + stem[1:] if capital else stem[0].lower() + stem[1:]
-        label = prefix + stem
-        if is_valid_label(label) and label not in self.used:
-            self.used.add(label)
-            self.described[label] = desc
-            return label
-        # abbreviate: keep a prefix of the name, then a counter
-        return self._unique((prefix + stem)[: 3 if len(prefix + stem) > 3 else len(prefix + stem)], desc)
+        """Readable label for a C entity; abbreviates long names, then falls back to a counter."""
+        parts = [p for p in re.split(r"_+", cname) if p] or ["x"]
+        parts = [re.sub(r"[^A-Za-z0-9]", "", p) or "x" for p in parts]
+        candidates = ["".join(parts)]
+        for k in (5, 4, 3, 2, 1):
+            candidates.append("".join(p[:k].capitalize() for p in parts))
+        candidates.append("".join(parts)[:6])
+        for cand in candidates:
+            cand = cand[0].upper() + cand[1:] if capital else cand[0].lower() + cand[1:]
+            if not cand[0].isalpha():
+                cand = ("X" if capital else "x") + cand
+            label = prefix + cand
+            if is_valid_label(label) and label not in self.used:
+                self.used.add(label)
+                self.described[label] = desc
+                return label
+        stem = (prefix + candidates[-2])[:3]
+        return self._unique(stem, desc)
 
     def claim(self, label: str, desc: str = ""):
         self.used.add(label)

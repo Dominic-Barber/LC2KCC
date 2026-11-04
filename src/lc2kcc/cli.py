@@ -106,23 +106,23 @@ def execute(asm: str, fast: bool, max_steps: int):
 
 
 def _run(args):
-    asm, _ = compile_files(args.inputs, args.include, args.define)
+    asm, symbol_map = compile_files(args.inputs, args.include, args.define)
     assembled, mem, steps = execute(asm, args.fast, args.max_steps)
     print(f"halted after {steps} instructions; image {len(assembled.words)} words")
     print(f"Result = {mem[assembled.symbols['Result']]}")
     for name in args.dump:
-        label = _find_label(assembled, name)
+        label = _find_label(symbol_map, name)
         print(f"--- {name} ---")
         print(read_cstring(mem, assembled.symbols[label]), end="")
 
 
-def _find_label(assembled, cname):
-    """Label of a C global, via the .map written by `cc` (looked up in-process)."""
-    from .compiler import Compiler  # noqa: F401
-
-    if cname in assembled.symbols:
-        return cname
-    raise SystemExit(f"label {cname} not found (use the label from the .map file)")
+def _find_label(symbol_map: str, cname: str) -> str:
+    """Label of the C global `cname`, from the compiler's label map."""
+    for line in symbol_map.splitlines():
+        label, _, desc = line.partition("\t")
+        if desc in (cname, f"static {cname}"):
+            return label
+    raise SystemExit(f"lc2kcc: no global named {cname}")
 
 
 def _lint(args):

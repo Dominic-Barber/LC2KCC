@@ -6,7 +6,7 @@ COREMARK = third_party/coremark
 PORT = ports/coremark
 COREMARK_SRCS = $(addprefix $(COREMARK)/,core_list_join.c core_main.c core_matrix.c core_state.c core_util.c) $(PORT)/core_portme.c
 
-.PHONY: test hello coremark-size clean
+.PHONY: test hello coremark coremark-native coremark-size fuzz clean
 
 test:
 	PYTHONPATH=$(CURDIR)/src $(PY) -m unittest discover -s tests -t tests -v
@@ -20,6 +20,26 @@ hello: | $(BUILD)
 	$(LC2KCC) lint $(BUILD)/hello.as
 	$(LC2KCC) as $(BUILD)/hello.as -o $(BUILD)/hello.mc
 	$(LC2KCC) run examples/hello.c
+
+CM_FLAGS = -I $(COREMARK) -I $(PORT) '-DFLAGS_STR="lc2kcc"'
+
+# CoreMark: compile, check layout, assemble (strict spec), run on the bundled
+# simulator, and print what the benchmark wrote to ee_outbuf.
+coremark: | $(BUILD)
+	$(LC2KCC) cc $(COREMARK_SRCS) $(CM_FLAGS) -o $(BUILD)/coremark.as
+	$(LC2KCC) lint $(BUILD)/coremark.as
+	$(LC2KCC) as $(BUILD)/coremark.as -o $(BUILD)/coremark.mc
+	$(LC2KCC) run $(COREMARK_SRCS) $(CM_FLAGS) --fast --dump ee_outbuf
+
+# The same sources built natively for x86-32; its output must equal the LC-2K run's.
+coremark-native: | $(BUILD)
+	printf '#include <stdio.h>\nextern char ee_outbuf[];\n__attribute__((destructor)) static void dump(void) { fputs(ee_outbuf, stdout); }\n' > $(BUILD)/dump.c
+	gcc -m32 -O1 -w $(CM_FLAGS) -o $(BUILD)/coremark-native $(COREMARK_SRCS) $(BUILD)/dump.c
+	$(BUILD)/coremark-native
+
+fuzz:
+	$(PY) tools/fuzz.py -n 500
+	$(PY) tools/fuzz.py -n 500 --mode stmt
 
 # Native x86-32 -Os size of CoreMark with the LC-2K port (compile only).
 coremark-size: | $(BUILD)
