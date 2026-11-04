@@ -179,7 +179,8 @@ class OutputFormatTest(unittest.TestCase):
         self.assertEqual(len(labels), len(set(labels)), "duplicate labels")
         self.assertTrue(all(len(l) <= 6 and l.isalnum() and l[0].isalpha() for l in labels))
         # the first instruction is at address 0 and the stack label closes the image
-        self.assertEqual(assembled.words[0] >> 22 & 7, 2, "starts with the lw that loads the stack pointer")
+        self.assertEqual(assembled.words[0], 0, "the word at address 0 is the value 0")
+        self.assertEqual(assembled.words[1] >> 22 & 7, 2, "then the lw that loads the stack pointer")
         self.assertEqual(lines[-1].split("\t")[0], "Stack")
         # global (non-static) data and functions are capitalized, statics are lowercase
         self.assertIn("Main", labels)
@@ -199,7 +200,7 @@ class OutputFormatTest(unittest.TestCase):
 
     def test_r0_is_never_written(self):
         _, _, asm, _, _ = run_source(self.SOURCE)
-        for line in asm.splitlines():
+        for line in asm.splitlines()[1:]:  # line 1 is `add 0 0 0`, the zero word at address 0
             parts = line.split()
             if len(parts) > 1 and not line[0].isspace():
                 parts = parts[1:]

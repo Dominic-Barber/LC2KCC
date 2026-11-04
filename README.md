@@ -3,7 +3,7 @@
 A C compiler for the **EECS 370 LC-2K ISA** (8 opcodes, 8 registers, 16-bit
 offsets, 65,536 words of memory). It is written in Python with
 [pycparser](https://github.com/eliben/pycparser) and compiles
-[CoreMark](third_party/coremark), unmodified, to a 9,850-word program that
+[CoreMark](third_party/coremark), unmodified, to a 9,851-word program that
 validates itself (`Correct operation validated.`) on the bundled simulator,
 with the same CRCs as the x86-32 build.
 
@@ -57,11 +57,11 @@ read. So:
 - the costs: an `int` uses 4 words, and the bytes of an `int` can't be read
   through a `char *` (type punning; CoreMark never does this).
 
-**ISA conventions.** The program starts at address 0 (the startup code),
-register 0 is the constant zero and the generated code never writes it, and
-the last word of the image is `Stack`, where the stack pointer starts. Since
-code occupies address 0, no C object has address 0, so `NULL` never aliases
-data. `lw`/`sw`/`beq` offsets are 16 bits, so every label the code loads, stores or
+**ISA conventions.** The program starts at address 0. The word at address 0
+is the value 0 (`add 0 0 0`, a no-op that is also the first instruction), so a
+null pointer reads 0 and no C object lives at address 0. Register 0 is the
+constant zero and the generated code never writes any other value to it. The
+last word of the image is `Stack`, where the stack pointer starts. `lw`/`sw`/`beq` offsets are 16 bits, so every label the code loads, stores or
 branches to must be below address 32,768; the compiler checks this by
 assembling its own output.
 
@@ -140,7 +140,7 @@ definitions, inline assembly.
   which implement the extended 470 encoding of the same assembly language,
   as an independent check (`lc2kcc run --fast`).
 
-CoreMark, one iteration (`ITERATIONS=1`): 9,850 words, about 3.9 million
+CoreMark, one iteration (`ITERATIONS=1`): 9,851 words, about 3.9 million
 instructions; `tools/profile.py` reports where they go. The port fakes a
 10-second run so CoreMark does not reject it as too short; real performance
 is the simulator's instruction count.

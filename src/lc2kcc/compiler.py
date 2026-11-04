@@ -554,6 +554,7 @@ class Compiler:
         if all_code:
             self.need_everything()
         main_ptr = self.addr_cell(main)
+        p.emit("add", 0, 0, 0, comment="the word at address 0 is 0, so a null pointer reads 0")
         p.emit("lw", 0, 5, "spinit", comment="initialize stack pointer")
         p.emit("lw", 0, 6, main_ptr, comment="load address of main")
         p.emit("jalr", 6, 7, comment="call main")
